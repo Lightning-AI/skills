@@ -1,0 +1,126 @@
+---
+name: lightning-jobs
+description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, fetch logs, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai.
+---
+
+# Lightning AI Jobs
+
+A Job runs a command on a dedicated cloud machine and terminates when done. Two flavors: **image jobs** (run inside any Docker image) and **studio jobs** (run inside a snapshot of an existing Studio's environment). Multi-machine distributed jobs use `MMT`.
+
+## Setup & auth
+
+```bash
+uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
+lightning login                     # browser flow; or headless:
+export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
+```
+
+Python snippets: `uv run --with lightning-sdk python script.py`.
+
+## Resolving org and teamspace (do this first)
+
+Jobs live in a teamspace owned by an organization or a user. **Never guess.** Use an explicit `--teamspace owner/teamspace` flag (Python: `Teamspace(name, org=...)` or `user=...`, mutually exclusive), or env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:
+
+```bash
+lightning api /v1/memberships | jq -r '.memberships[] | [.owner_type, .name, .project_id] | @tsv'
+```
+
+Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
+
+## CLI reference
+
+Subcommands: `run`, `list`, `inspect`, `stop`, `delete`. **There is no `logs` or `status` CLI subcommand** — use `inspect` (JSON, includes status) or the Python SDK for logs.
+
+```bash
+# image job
+lightning job run --name my-job --teamspace owner/teamspace \
+  --image python:3.11-slim --machine CPU \
+  --command "python -c 'print(\"hello\")'" \
+  [-e KEY=VALUE ...] [--interruptible] [--cloud PROVIDER]
+
+# studio job (snapshot of an existing studio's environment; command required)
+lightning job run --name my-job --teamspace owner/teamspace \
+  --studio my-studio --machine A100 --command "python train.py"
+
+# private registry image
+lightning job run ... --image-credentials <secret-name> [--cloud-account-auth]  # --cloud-account-auth for ECR-type registries
+
+# monitor / manage
+lightning job list --teamspace owner/teamspace [--all] [--sort-by status]
+lightning job inspect my-job --teamspace owner/teamspace      # JSON incl. status, machine, cost
+lightning job stop my-job --teamspace owner/teamspace
+lightning job delete my-job --teamspace owner/teamspace
+
+# multi-machine training: same flags plus --num-machines
+lightning mmt run --name my-mmt --teamspace owner/teamspace \
+  --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
+  --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
+```
+
+## Python SDK
+
+```python
+from lightning_sdk import Job, MMT, Machine, Status, Studio, Teamspace
+
+ts = Teamspace("my-teamspace", org="my-org")   # or user="username"
+
+job = Job.run(
+    name="my-job",                    # must be unique within the teamspace
+    machine=Machine.CPU,              # or "A100", Machine.from_str("L4"), ...
+    image="python:3.11-slim",         # OR studio=<Studio|name> — mutually exclusive
+    command="python train.py",        # required for studio jobs, optional for image jobs
+    teamspace=ts,
+    env={"RUN_MODE": "prod"},
+    interruptible=False,              # True = spot: cheaper, can be preempted
+    max_runtime=3 * 3600,             # seconds; default ~3h cap
+)
+print(job.link)                       # web UI URL
+
+job.wait(interval=10, timeout=3600, stop_on_timeout=True)   # blocks until terminal
+print(job.status)                     # Status.Completed / Failed / Stopped / Running / Pending
+if job.status == Status.Failed:
+    print(job.logs)                   # ONLY available once job is terminal (raises while running)
+print(job.total_cost)                 # USD
+
+job.stop(); job.delete()
+
+# distributed job — same API plus num_machines; per-worker access via .machines
+mmt = MMT.run(name="my-mmt", num_machines=2, machine=Machine.L4, image="...", command="...", teamspace=ts)
+mmt.wait()
+for worker in mmt.machines:           # each worker is a Job
+    print(worker.name, worker.status) # worker.logs per node; mmt.logs raises NotImplementedError
+```
+
+Fetch an existing job: `Job("my-job", teamspace=ts)` (raises `ValueError` if it doesn't exist).
+
+### Image vs studio jobs
+
+| | Studio job | Image job |
+|---|---|---|
+| `command` | required | optional (falls back to image entrypoint) |
+| `entrypoint`, `image_credentials`, `cloud_account_auth` | forbidden | allowed |
+| artifacts | `/teamspace/jobs/<name>/artifacts` | none by default — route via `path_mappings={"<container-path>": "<connection>:<path>"}` |
+| scratch disks | `scratch_disks={"data": 100}` (GiB, under `/teamspace/scratch/`) | forbidden |
+
+### Machines
+
+`CPU_SMALL`, `CPU`, `CPU_X_2/4/8/16`, `DATA_PREP(_MAX/_ULTRA)`, `T4(_X_2/4/8)`, `L4(_X_2/4/8)`, `L40S(_X_2/4/8)`, `RTXP_6000(_X_2/4/8)`, `A100(_X_2/4/8)`, `H100(_X_2/4/8)`, `H200(_X_8)`, `B200_X_8`. Multi-GPU `_X_N` variants bill N GPUs; MMT bills per machine × `num_machines`.
+
+## Raw API fallback
+
+```bash
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].project_id')
+lightning api "/v1/projects/${PROJECT_ID}/jobs" -F limit=20 -q '.jobs[].name'
+lightning api "/v1/projects/${PROJECT_ID}/jobs/find" -f name=my-job
+lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}/download-logs"    # returns signed log URL
+lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -F limit=20
+```
+
+## Gotchas
+
+- Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
+- `job.logs` raises while the job is Pending/Running — poll `job.status` first, read logs after it reaches a terminal state.
+- `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
+- Job names must be unique per teamspace; omitted `--name` auto-generates one.
+- `--machine` flag is case-insensitive; A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
+- `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
