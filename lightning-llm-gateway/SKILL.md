@@ -131,3 +131,4 @@ paths = download_model("my-org/my-teamspace/my-model")
 - Conversations persist server-side under their name; set `LIGHTNING_EPHEMERAL=true` to avoid persisting anything.
 - There is no `llm.list_models()`; known public models are a static map in the SDK (`lightning_sdk/llm/public_assistants.py`).
 - `tools=` is only honored on the sync (non-async) path.
+- Reasoning models (`openai/gpt-5*`) spend `max_completion_tokens` on internal reasoning first — small budgets (≤100) yield empty responses or intermittent client-side deserialization `TypeError`s. Give them a generous budget (1000+) or omit the cap.
