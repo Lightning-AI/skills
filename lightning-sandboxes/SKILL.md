@@ -103,6 +103,55 @@ sb = client.get("sbx-...")
 
 Interactive PTY (needs `pip install websocket-client`): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. PTY exit codes are unreliable (0/-1/None only) — prefer `run_command` when you need exit codes.
 
+## Example workflows
+
+Prompts this skill handles: *"run this untrusted script somewhere safe"*, *"test my code in a clean VM"*, *"spin up a container from ghcr.io/... and poke around"*, *"give me a devbox that survives restarts"*.
+
+**Safely execute untrusted/generated code (no network egress, auto-cleanup):**
+
+```python
+from lightning_sdk.sandbox import Sandbox
+
+sb = Sandbox.create(name="quarantine", teamspace="my-org/my-teamspace",
+                    network_policy="deny-all", timeout=15 * 60 * 1000)  # hard kill after 15 min
+try:
+    sb.write_file("/workspace/suspect.py", open("suspect.py").read())
+    cmd = sb.run_command("python /workspace/suspect.py")
+    print(cmd.exit_code, cmd.output)
+finally:
+    sb.delete()
+```
+
+**Test code in a clean environment from the CLI:**
+
+```bash
+SBX=$(lightning sandbox create --name test-run --teamspace my-org/my-teamspace --timeout 1800000 --json | jq -r .id)
+lightning sandbox run $SBX -- python --version
+lightning sandbox run $SBX --cwd /workspace -- bash -lc "pip install requests && python -c 'import requests; print(requests.__version__)'"
+lightning sandbox run $SBX --detached -- bash -lc "pytest -q > /workspace/test.log 2>&1"   # prints cmd_id
+lightning sandbox command $SBX <cmd_id>          # poll status + output
+lightning sandbox delete $SBX
+```
+
+**Try out a custom image:**
+
+```bash
+lightning sandbox create --name img-test --image ghcr.io/myorg/myimage:latest \
+  --teamspace my-org/my-teamspace --timeout 1800000
+# private registry: --image-secret-ref <docker-registry-secret-name>
+```
+
+**Persistent devbox with snapshot-based branching:**
+
+```python
+sb = Sandbox.create(name="devbox", teamspace="my-org/my-teamspace", persistent=True)
+sb.run_command("pip install torch numpy pandas")     # slow setup, do once
+snap = sb.snapshot()                                 # golden image
+sb.stop()                                            # pause billing; sb.resume() later, same id
+fresh = Sandbox.create(name="experiment-1", snapshot_id=snap.id,
+                       teamspace="my-org/my-teamspace")   # warm clone with deps preinstalled
+```
+
 ## Raw API fallback
 
 ```bash

@@ -60,6 +60,41 @@ Async: `LLM("...", enable_async=True)` makes `chat()` awaitable (async generator
 
 `openai/gpt-4o`, `openai/gpt-4`, `openai/o3-mini`, `openai/gpt-5`, `openai/gpt-5-mini`, `openai/gpt-5-nano`, `anthropic/claude-3-5-sonnet-20240620`, `google/gemini-2.5-pro`, `google/gemini-2.5-flash`, `lightning-ai/DeepSeek-V3.1`, `lightning-ai/gpt-oss-20b`, `lightning-ai/gpt-oss-120b`. The set evolves — an unknown `provider/model` raises at construction; check the lightning.ai Model APIs page for the current catalog. Any other prefix (`myorg/my-assistant`) resolves as a custom org/user assistant.
 
+## Example workflows
+
+Prompts this skill handles: *"summarize this file with gpt-4o via lightning"*, *"compare Claude and Gemini answers on this prompt"*, *"which gateway model is cheapest for this task?"*, *"push this checkpoint to the model registry"*.
+
+**One-off inference from the shell:**
+
+```bash
+uv run --with lightning-sdk python -c "
+from lightning_sdk.llm import LLM
+llm = LLM('openai/gpt-4o', teamspace='my-org/my-teamspace')
+print(llm.chat('Explain CUDA streams in two sentences.'))"
+```
+
+**Compare models on the same prompt (price-aware):**
+
+```python
+from lightning_sdk.llm import LLM
+prompt = "Extract the action items from this meeting transcript: ..."
+for model in ["openai/gpt-4o", "anthropic/claude-3-5-sonnet-20240620", "google/gemini-2.5-flash"]:
+    llm = LLM(model, teamspace="my-org/my-teamspace")
+    m = llm.metadata
+    print(f"--- {model} (in ${m.prompt_price}/tok, out ${m.completion_price}/tok)")
+    print(llm.chat(prompt, max_completion_tokens=300))
+```
+
+**Long-running assistant with memory (multi-turn conversation persisted server-side):**
+
+```python
+llm = LLM("openai/gpt-4o", teamspace="my-org/my-teamspace")
+llm.chat("You'll help me refactor a Go service. Here's the layout: ...", conversation="refactor")
+llm.chat("Now write the storage interface we discussed", conversation="refactor")   # remembers context
+print(llm.get_history("refactor"))
+llm.reset_conversation("refactor")   # wipe when done
+```
+
 ## API keys for direct REST access
 
 For calling public inference endpoints outside the SDK (`Authorization: Bearer <key>`):

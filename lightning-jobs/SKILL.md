@@ -106,6 +106,56 @@ Fetch an existing job: `Job("my-job", teamspace=ts)` (raises `ValueError` if it 
 
 `CPU_SMALL`, `CPU`, `CPU_X_2/4/8/16`, `DATA_PREP(_MAX/_ULTRA)`, `T4(_X_2/4/8)`, `L4(_X_2/4/8)`, `L40S(_X_2/4/8)`, `RTXP_6000(_X_2/4/8)`, `A100(_X_2/4/8)`, `H100(_X_2/4/8)`, `H200(_X_8)`, `B200_X_8`. Multi-GPU `_X_N` variants bill N GPUs; MMT bills per machine × `num_machines`.
 
+## Example workflows
+
+Prompts this skill handles: *"run this script on an A100 as a batch job"*, *"launch my docker image on lightning"*, *"why did my job fail — show me the logs"*, *"run a 2-node distributed training"*.
+
+**Run a containerized script and report the outcome:**
+
+```bash
+lightning job run --name fmt-check-$(date +%s) --teamspace my-org/my-teamspace \
+  --image python:3.11-slim --machine CPU \
+  --command "pip install ruff && ruff check ." 
+lightning job list --teamspace my-org/my-teamspace --sort-by status
+```
+
+**Launch, wait, and fetch logs (the reliable agent loop — logs are SDK-only and terminal-state-only):**
+
+```python
+from lightning_sdk import Job, Machine, Status
+job = Job.run(name="train-run-42", machine=Machine.L4, image="pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime",
+              command="python -c 'import torch; print(torch.cuda.is_available())'",
+              teamspace="my-teamspace", org="my-org", interruptible=True)
+job.wait(interval=15, timeout=2*3600, stop_on_timeout=True)
+print(job.status, f"${job.total_cost:.4f}")
+print(job.logs)          # safe now: job is terminal
+```
+
+One-liner to check an existing job from the shell:
+
+```bash
+uv run --with lightning-sdk python -c \
+  "from lightning_sdk import Job; j=Job('train-run-42', teamspace='my-teamspace', org='my-org'); print(j.status); print(j.logs if str(j.status) in ('Completed','Failed','Stopped') else '(still running)')"
+```
+
+**Parameter sweep — several jobs from one loop:**
+
+```python
+for lr in ["1e-3", "3e-4", "1e-4"]:
+    Job.run(name=f"sweep-lr-{lr}", machine=Machine.T4, studio="exp-1",
+            command=f"python train.py --lr {lr}", env={"WANDB_RUN": f"lr-{lr}"},
+            teamspace="my-teamspace", org="my-org", interruptible=True)
+# artifacts of each land in /teamspace/jobs/<name>/artifacts (studio jobs)
+```
+
+**Distributed (2×L4, one process per node):**
+
+```bash
+lightning mmt run --name ddp-test --teamspace my-org/my-teamspace \
+  --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
+  --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
+```
+
 ## Raw API fallback
 
 ```bash

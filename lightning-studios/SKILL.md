@@ -105,6 +105,44 @@ Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or s
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
+## Example workflows
+
+Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
+
+**Create a studio, run a script, collect results, stop** (cheap default: start on CPU, switch to GPU only for the run):
+
+```bash
+lightning studio start --name exp-1 --teamspace my-org/my-teamspace --machine CPU --create
+lightning cp -r ./src lit://my-org/my-teamspace/studios/exp-1/src/
+lightning studio switch --name exp-1 --teamspace my-org/my-teamspace --machine L4
+```
+```python
+from lightning_sdk import Studio
+studio = Studio("exp-1", teamspace="my-teamspace", org="my-org")
+out, code = studio.run_with_exit_code("cd ~/src && pip install -r requirements.txt && python train.py")
+print(out)
+```
+```bash
+lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
+lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
+```
+
+**SSH in and run scripts interactively** (for a human user; agents should prefer `studio.run*` above since `ssh` opens an interactive shell):
+
+```bash
+lightning studio ssh --name exp-1 --teamspace my-org/my-teamspace          # interactive shell
+lightning ssh configure --name exp-1 --teamspace my-org/my-teamspace      # writes ~/.ssh/config Host block...
+ssh exp-1 'python ~/src/eval.py'                                          # ...then plain ssh runs one-off commands
+lightning studio connect exp-1 --teamspace my-org/my-teamspace --machine CPU   # create+start+ssh in one shot
+```
+
+**Kick off a long run and detach** (survives your session; studio keeps billing until stopped):
+
+```python
+out, code = studio.run_and_detach("cd ~/src && nohup python train.py > train.log 2>&1", timeout=30)
+# later: studio.run("tail -20 ~/src/train.log")
+```
+
 ## Raw API fallback
 
 For anything the CLI doesn't wrap, `lightning api <path>` makes an authenticated request (`-X` method, `-F` typed field, `-f` string field, `-q` jq filter):

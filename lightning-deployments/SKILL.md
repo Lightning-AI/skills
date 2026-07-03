@@ -96,7 +96,47 @@ dep.stop()                                      # scales to 0; blocks until repl
 
 HuggingFace model serving via SDK: `dep.start(model="meta-llama/...", machine=Machine.L40S, ports=8000, hf_token_secret="...")` — `image`/`studio` must be None; still pass `ports`.
 
-There is no `delete()` on the SDK class — delete via CLI or the raw API.
+**Trap:** `dep.delete()` does NOT delete the deployment — it is an HTTP helper like `dep.get()`/`dep.post()` and sends an HTTP `DELETE` request to the deployed service's endpoint. To delete the deployment resource use `lightning deployment delete NAME --yes` or the raw API.
+
+## Example workflows
+
+Prompts this skill handles: *"deploy this docker image behind an API"*, *"serve Llama 3.1 8B on lightning"*, *"scale my deployment down at night"*, *"roll out the new image version"*.
+
+**Deploy a container, verify it responds, then clean up:**
+
+```bash
+lightning deployment create hello-api --teamspace my-org/my-teamspace \
+  --image nginx:latest --machine CPU --port 80 --min-replicas 0 --max-replicas 1 --api-key-auth
+lightning deployment inspect hello-api --teamspace my-org/my-teamspace   # JSON: status, endpoint URL
+```
+```python
+from lightning_sdk import Deployment
+dep = Deployment("hello-api", teamspace="my-org/my-teamspace")
+print(dep.urls)                       # e.g. ['https://<id>.litng.ai']
+print(dep.get(path="/").status_code)  # sends the caller's Lightning API key for ApiKeyAuth
+```
+```bash
+lightning deployment delete hello-api --teamspace my-org/my-teamspace --yes
+```
+
+**Serve an open-weights LLM (vLLM, built server-side — no Dockerfile needed):**
+
+```bash
+lightning deployment create qwen-served --teamspace my-org/my-teamspace \
+  --model Qwen/Qwen2.5-7B-Instruct --machine L40S --min-replicas 0 --max-replicas 1 --api-key-auth --dry-run
+# review the resolved vLLM config, then re-run without --dry-run (add --ack <code> if warnings are listed)
+lightning deployment logs qwen-served --teamspace my-org/my-teamspace -f   # watch it come up
+```
+
+The endpoint serves an OpenAI-compatible API on port 8000 — point any OpenAI client's `base_url` at `dep.urls[0]`.
+
+**Operate: scale, update, roll back traffic costs:**
+
+```bash
+lightning deployment update hello-api --teamspace my-org/my-teamspace --min-replicas 1 --max-replicas 4   # keep warm
+lightning deployment update hello-api --teamspace my-org/my-teamspace --min-replicas 0 --max-replicas 0   # stop (scale to zero)
+lightning deployment update hello-api --teamspace my-org/my-teamspace --image nginx:1.27                  # new release, rolling by default
+```
 
 ## Raw API fallback
 
