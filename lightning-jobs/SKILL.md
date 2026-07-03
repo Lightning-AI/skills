@@ -176,4 +176,4 @@ lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -F limit=20
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
 - `job run`/`mmt run` fail with `--teamspace owner/name` when the username can't be resolved (headless env-var auth): the real error "Teamspace owner/name does not exist" is masked by "Neither name is provided nor can the user be inferred from the environment variable!". Pass `--teamspace <name> --org <owner>` instead. `job list`/`inspect`/`stop`/`delete` accept `owner/name` fine.
 - Same rule in Python: `Job.run(..., teamspace="<name>", org="<owner>")` — a combined `"owner/name"` string is not valid for `teamspace=` in SDK classes.
-- Image jobs can sit in `Pending` for several minutes (machine provisioning + image pull) before running.
+- Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.
