@@ -13,9 +13,16 @@ A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default
 uvx lightning-sdk --version    # CLI; `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
 ```
 
-**Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Preferred setup: a **teamspace- or org-scoped API key** (Lightning UI → Members → API keys) in `LIGHTNING_SANDBOX_API_KEY`. A personal `lightning login` credential works for basic use but fails scoped operations with "organization_id is required".
+**Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Sandboxes need an **org- or teamspace-scoped API key** in `LIGHTNING_SANDBOX_API_KEY`; a personal `lightning login` credential fails with *"Use a teamspace- or org-scoped API key (Members → API keys), not your personal login key."*
 
-If no scoped key is configured and the user belongs to multiple orgs, **ask which org to use** and have them create/provide a key scoped to it:
+You can mint an org-scoped key from the CLI (requires working personal auth):
+
+```bash
+export LIGHTNING_SANDBOX_API_KEY=$(lightning api-key create --org my-org --name sandbox-agent)
+# or reuse the org default key: lightning api-key get --org my-org
+```
+
+If the user belongs to multiple orgs and none is configured, **ask which org to use**:
 
 ```bash
 lightning api /v1/memberships | jq -r '.memberships[] | select(.ownerType=="organization") | [.ownerId, .name] | @tsv'
@@ -26,15 +33,16 @@ Snapshot/stop of persistent sandboxes needs a **teamspace-scoped** key (org-scop
 ## CLI reference
 
 ```bash
-# create — blocks until running (up to ~5 min)
+# create — blocks until running (usually seconds)
 lightning sandbox create --name devbox \
   [--instance-type cpu-1]            # default cpu-1 \
-  [--image ghcr.io/org/img:latest]   # custom rootfs, CPU-only; or --runtime <id> (mutually exclusive) \
+  [--runtime python313]              # DEFAULT IS node24 (Node.js, NO python!) — use python313 for Python \
+  [--image ghcr.io/org/img:latest]   # custom rootfs, CPU-only; mutually exclusive with --runtime \
   [--image-secret-ref <docker-registry-secret>] \
   [--teamspace owner/teamspace] [--persistent] [--spot] [--port 8000] \
   [--snapshot-id snap-...]           # warm start from a snapshot \
   [--timeout 3600000]                # auto-stop lifetime in MILLISECONDS \
-  [--json]
+  [--json]                           # prints the sandbox id — capture it for later commands
 
 lightning sandbox list [--teamspace owner/teamspace] [--limit N] [--json]
 
@@ -70,6 +78,7 @@ Sandbox.configure(api_key="...")
 sb = Sandbox.create(
     name="devbox",
     instance_type="cpu-1",
+    runtime="python313",                   # default is node24 (Node.js only — no python!)
     teamspace="owner/teamspace",
     persistent=True,                       # enables stop()/resume()
     network_policy=NetworkPolicy(allow_cidrs=["10.0.0.0/8"]),  # or "deny-all" / default open egress
@@ -112,7 +121,7 @@ Prompts this skill handles: *"run this untrusted script somewhere safe"*, *"test
 ```python
 from lightning_sdk.sandbox import Sandbox
 
-sb = Sandbox.create(name="quarantine", teamspace="my-org/my-teamspace",
+sb = Sandbox.create(name="quarantine", teamspace="my-org/my-teamspace", runtime="python313",
                     network_policy="deny-all", timeout=15 * 60 * 1000)  # hard kill after 15 min
 try:
     sb.write_file("/workspace/suspect.py", open("suspect.py").read())
@@ -125,7 +134,7 @@ finally:
 **Test code in a clean environment from the CLI:**
 
 ```bash
-SBX=$(lightning sandbox create --name test-run --teamspace my-org/my-teamspace --timeout 1800000 --json | jq -r .id)
+SBX=$(lightning sandbox create --name test-run --teamspace my-org/my-teamspace --runtime python313 --timeout 1800000 --json | jq -r .id)
 lightning sandbox run $SBX -- python --version
 lightning sandbox run $SBX --cwd /workspace -- bash -lc "pip install requests && python -c 'import requests; print(requests.__version__)'"
 lightning sandbox run $SBX --detached -- bash -lc "pytest -q > /workspace/test.log 2>&1"   # prints cmd_id
@@ -144,7 +153,7 @@ lightning sandbox create --name img-test --image ghcr.io/myorg/myimage:latest \
 **Persistent devbox with snapshot-based branching:**
 
 ```python
-sb = Sandbox.create(name="devbox", teamspace="my-org/my-teamspace", persistent=True)
+sb = Sandbox.create(name="devbox", teamspace="my-org/my-teamspace", runtime="python313", persistent=True)
 sb.run_command("pip install torch numpy pandas")     # slow setup, do once
 snap = sb.snapshot()                                 # golden image
 sb.stop()                                            # pause billing; sb.resume() later, same id
@@ -168,7 +177,7 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls 
 - **Timeout units differ:** `create --timeout` / `extend_timeout()` / snapshot `--expiration` are **milliseconds**; `sandbox run --timeout` (detached wait) is **seconds**.
 - Sandboxes keep billing until stopped/deleted and are not cleaned up by garbage collection — always `stop()`/`delete()`, and set a create-time `timeout` as a safety net.
 - Ephemeral (default) sandboxes lose everything on stop; only `persistent=True` gives stop/resume. Snapshots capture the filesystem only, never running processes.
-- `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
+- **The default runtime is `node24` — Node.js only, no Python.** Pass `runtime="python313"` / `--runtime python313` for Python workloads (naming: `node22`, `node24`, `python313`; invalid ids fail with "invalid runtime"). `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
 - Network policy is **create-time only** — you cannot change egress rules on a running sandbox. Default is open egress (`allow-all`); use `"deny-all"` or CIDR allowlists for untrusted code.
 - Commands run as **root** inside the sandbox.
 - Error "organization_id is required" → the API key isn't org/teamspace-scoped; "API key is not authorized for this project" → the teamspace-scoped key is bound to a different teamspace.
