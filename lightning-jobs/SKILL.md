@@ -22,7 +22,7 @@ Python snippets: `uv run --with lightning-sdk python script.py`.
 Jobs live in a teamspace owned by an organization or a user. **Never guess.** Use an explicit `--teamspace owner/teamspace` flag (Python: `Teamspace(name, org=...)` or `user=...`, mutually exclusive), or env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:
 
 ```bash
-lightning api /v1/memberships | jq -r '.memberships[] | [.owner_type, .name, .project_id] | @tsv'
+lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
 ```
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
@@ -32,14 +32,14 @@ Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 Subcommands: `run`, `list`, `inspect`, `stop`, `delete`. **There is no `logs` or `status` CLI subcommand** — use `inspect` (JSON, includes status) or the Python SDK for logs.
 
 ```bash
-# image job
-lightning job run --name my-job --teamspace owner/teamspace \
+# image job — NOTE: job/mmt run need --teamspace <name> --org <owner> (bare "owner/name" breaks headless, see Gotchas)
+lightning job run --name my-job --teamspace teamspace --org owner \
   --image python:3.11-slim --machine CPU \
   --command "python -c 'print(\"hello\")'" \
   [-e KEY=VALUE ...] [--interruptible] [--cloud PROVIDER]
 
 # studio job (snapshot of an existing studio's environment; command required)
-lightning job run --name my-job --teamspace owner/teamspace \
+lightning job run --name my-job --teamspace teamspace --org owner \
   --studio my-studio --machine A100 --command "python train.py"
 
 # private registry image
@@ -52,7 +52,7 @@ lightning job stop my-job --teamspace owner/teamspace
 lightning job delete my-job --teamspace owner/teamspace
 
 # multi-machine training: same flags plus --num-machines
-lightning mmt run --name my-mmt --teamspace owner/teamspace \
+lightning mmt run --name my-mmt --teamspace teamspace --org owner \
   --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
   --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
 ```
@@ -113,7 +113,7 @@ Prompts this skill handles: *"run this script on an A100 as a batch job"*, *"lau
 **Run a containerized script and report the outcome:**
 
 ```bash
-lightning job run --name fmt-check-$(date +%s) --teamspace my-org/my-teamspace \
+lightning job run --name fmt-check-$(date +%s) --teamspace my-teamspace --org my-org \
   --image python:3.11-slim --machine CPU \
   --command "pip install ruff && ruff check ." 
 lightning job list --teamspace my-org/my-teamspace --sort-by status
@@ -151,7 +151,7 @@ for lr in ["1e-3", "3e-4", "1e-4"]:
 **Distributed (2×L4, one process per node):**
 
 ```bash
-lightning mmt run --name ddp-test --teamspace my-org/my-teamspace \
+lightning mmt run --name ddp-test --teamspace my-teamspace --org my-org \
   --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
   --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
 ```
@@ -159,7 +159,7 @@ lightning mmt run --name ddp-test --teamspace my-org/my-teamspace \
 ## Raw API fallback
 
 ```bash
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].project_id')
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
 lightning api "/v1/projects/${PROJECT_ID}/jobs" -F limit=20 -q '.jobs[].name'
 lightning api "/v1/projects/${PROJECT_ID}/jobs/find" -f name=my-job
 lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}/download-logs"    # returns signed log URL
@@ -174,3 +174,6 @@ lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -F limit=20
 - Job names must be unique per teamspace; omitted `--name` auto-generates one.
 - `--machine` flag is case-insensitive; A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
+- `job run`/`mmt run` fail with `--teamspace owner/name` when the username can't be resolved (headless env-var auth): the real error "Teamspace owner/name does not exist" is masked by "Neither name is provided nor can the user be inferred from the environment variable!". Pass `--teamspace <name> --org <owner>` instead. `job list`/`inspect`/`stop`/`delete` accept `owner/name` fine.
+- Same rule in Python: `Job.run(..., teamspace="<name>", org="<owner>")` — a combined `"owner/name"` string is not valid for `teamspace=` in SDK classes.
+- Image jobs can sit in `Pending` for several minutes (machine provisioning + image pull) before running.

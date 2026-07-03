@@ -22,7 +22,7 @@ Python snippets: `uv run --with lightning-sdk python script.py`.
 Deployments live in a teamspace owned by an organization or a user. **Never guess.** Use explicit `--teamspace owner/teamspace` (Python: `Teamspace(name, org=...)` or `user=...`), env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:
 
 ```bash
-lightning api /v1/memberships | jq -r '.memberships[] | [.owner_type, .name, .project_id] | @tsv'
+lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
 ```
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
@@ -72,7 +72,7 @@ from lightning_sdk.api.deployment_api import (
     RollingUpdateReleaseStrategy, HttpHealthCheck,
 )
 
-dep = Deployment("my-api", teamspace="owner/teamspace")   # handle; exists check via dep.is_started
+dep = Deployment("my-api", teamspace="my-teamspace", org="my-org")   # SDK takes the BARE teamspace name + org=/user= — "owner/name" strings are CLI-only
 dep.start(
     image="nginx:latest",
     machine=Machine.CPU,
@@ -111,8 +111,8 @@ lightning deployment inspect hello-api --teamspace my-org/my-teamspace   # JSON:
 ```
 ```python
 from lightning_sdk import Deployment
-dep = Deployment("hello-api", teamspace="my-org/my-teamspace")
-print(dep.urls)                       # e.g. ['https://<id>.litng.ai']
+dep = Deployment("hello-api", teamspace="my-teamspace", org="my-org")   # bare name + org, not "owner/name"
+print(dep.urls)                       # e.g. ['https://80-dep-<id>-d.cloudspaces.litng.ai'] — available even while scaled to zero
 print(dep.get(path="/").status_code)  # sends the caller's Lightning API key for ApiKeyAuth
 ```
 ```bash
@@ -141,7 +141,7 @@ lightning deployment update hello-api --teamspace my-org/my-teamspace --image ng
 ## Raw API fallback
 
 ```bash
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].project_id')
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
 lightning api "/v1/projects/${PROJECT_ID}/deployments" -F limit=20 -q '.deployments[].name'
 lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}"
 lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELETE
@@ -156,3 +156,4 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - A port is mandatory for non-model deployments (`ValueError` otherwise); `--model` defaults to 8000 and requires a GPU machine.
 - Deleting is destructive and the CLI prompts unless `--yes`; confirm with the user first.
 - `--model` deployments may return validation warnings; re-run with `--ack <code>` or `--force`, and use `--dry-run` to preview the resolved vLLM config.
+- In the Python SDK, `teamspace=` must be the bare teamspace name with `org=`/`user=` passed separately; `Deployment("x", teamspace="owner/name")` fails with "Teamspace owner/name does not exist" — and in headless (env-var auth) runs that error is masked by a misleading "Neither name is provided nor can the user be inferred from the environment variable!".

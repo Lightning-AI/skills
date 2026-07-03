@@ -17,7 +17,7 @@ lightning login             # or headless: export LIGHTNING_USER_ID=... LIGHTNIN
 Inference is **billed to a teamspace** — the `LLM` class refuses to run without one. Resolution: explicit `teamspace=` arg → `LIGHTNING_TEAMSPACE` env → the user's default teamspace. If the user belongs to multiple orgs/teamspaces and none is configured, **ask which one should be billed**:
 
 ```bash
-lightning api /v1/memberships | jq -r '.memberships[] | [.owner_type, .name] | @tsv'
+lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name] | @tsv'
 ```
 
 ## Python SDK

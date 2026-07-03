@@ -27,7 +27,7 @@ Every studio lives in a teamspace owned by either an organization or a user. **N
 3. Otherwise list the options and **ask the user which org/teamspace to use**:
 
 ```bash
-lightning api /v1/memberships | jq -r '.memberships[] | [.owner_type, .name, .project_id] | @tsv'
+lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
 ```
 
 Persist the user's choice so they aren't asked again: `lightning config set teamspace <owner>/<teamspace>`.
@@ -149,7 +149,7 @@ For anything the CLI doesn't wrap, `lightning api <path>` makes an authenticated
 
 ```bash
 lightning api /v1/memberships -q '.memberships[].name'
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].project_id')
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
 lightning api "/v1/projects/${PROJECT_ID}/cloud-spaces" -F limit=20     # studios are "cloud spaces" in the API
 ```
 
@@ -161,3 +161,5 @@ lightning api "/v1/projects/${PROJECT_ID}/cloud-spaces" -F limit=20     # studio
 - `studio create` does not attach compute; `studio start --create` does both.
 - `lightning studio delete` prompts for confirmation — in non-interactive contexts confirm with the user first, then use the Python SDK `studio.delete()`.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
+- `lightning cp lit://.../file.txt file.txt` (bare local filename as destination) fails with `FileNotFoundError: [Errno 2] ... ''` — write the destination as `./file.txt` or a directory path.
+- In Python, `teamspace=` takes the bare teamspace name with `org=`/`user=` separate; `"owner/name"` combined strings only work in CLI `--teamspace` flags.

@@ -18,7 +18,7 @@ uvx lightning-sdk --version    # CLI; `sandbox <cmd>` is also installed standalo
 If no scoped key is configured and the user belongs to multiple orgs, **ask which org to use** and have them create/provide a key scoped to it:
 
 ```bash
-lightning api /v1/memberships | jq -r '.memberships[] | select(.owner_type=="organization") | [.owner_id, .name] | @tsv'
+lightning api /v1/memberships | jq -r '.memberships[] | select(.ownerType=="organization") | [.ownerId, .name] | @tsv'
 ```
 
 Snapshot/stop of persistent sandboxes needs a **teamspace-scoped** key (org-scoped is not enough).
@@ -161,7 +161,7 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}" -f "organizationId=${ORG_ID}"
 lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls -F detached=false
 ```
 
-`ORG_ID` from memberships: `lightning api /v1/memberships | jq -r '[.memberships[] | select(.owner_type == "organization") | .owner_id][0]'`.
+`ORG_ID` from memberships: `lightning api /v1/memberships | jq -r '[.memberships[] | select(.ownerType == "organization") | .ownerId][0]'`.
 
 ## Gotchas
 
