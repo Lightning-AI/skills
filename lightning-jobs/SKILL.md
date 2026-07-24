@@ -189,18 +189,36 @@ lightning mmt run --name ddp-test --teamspace my-teamspace --org my-org \
 
 ## Raw API fallback
 
+For what the CLI doesn't wrap (chiefly logs and exact-cost JSON). **Call these as plain
+GETs — do NOT add `-F limit=…`: a `-F` field flips the request into a spec'd form and the
+server rejects it with `400 "spec is required"` (see Gotchas). Slice client-side with `-q`.**
+
 ```bash
 PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
-lightning api "/v1/projects/${PROJECT_ID}/jobs" -F limit=20 -q '.jobs[].name'
-lightning api "/v1/projects/${PROJECT_ID}/jobs/find" -f name=my-job
-lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}/download-logs"    # returns signed log URL
-lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -F limit=20
+
+# list jobs (id + name) — plain GET, no -F
+lightning api "/v1/projects/${PROJECT_ID}/jobs" -q '.jobs[] | [.id, .name] | @tsv'
+
+# inspect one job as JSON (status, machine, cost, timestamps) — by JOB ID (job_...), not name
+lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}"
+
+# logs (not exposed by CLI/SDK): returns a short-lived signed URL to the log file
+lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}/download-logs"
+
+# list multi-machine jobs — also a plain GET, no -F
+lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -q '.multiMachineJobs[].name'
 ```
+
+`JOB_ID` is the `job_...` id from the list call (these endpoints 404 on the human name).
+To find one job by name, **filter the list** — the `/jobs/find` route returns `501 Not
+Implemented`. For everyday use prefer the CLI: `lightning job list`, `lightning job
+inspect <name>`, `lightning mmt list`.
 
 ## Gotchas
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - `job.logs` raises while the job is Pending/Running — poll `job.status` first, read logs after it reaches a terminal state.
+- On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` — a `-F` field turns the GET into a spec'd request and the server 400s with `"spec is required"` (jobs) / `"name is required"` (mmt). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name, and `/jobs/find` returns `501` (filter the list instead).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
 - Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
 - Job names must be unique per teamspace; omitted `--name` auto-generates one.
