@@ -99,8 +99,39 @@ Fetch an existing job: `Job("my-job", teamspace=ts)` (raises `ValueError` if it 
 |---|---|---|
 | `command` | required | optional (falls back to image entrypoint) |
 | `entrypoint`, `image_credentials`, `cloud_account_auth` | forbidden | allowed |
-| artifacts | `/teamspace/jobs/<name>/artifacts` | none by default — route via `path_mappings={"<container-path>": "<connection>:<path>"}` |
+| artifacts | write outputs to the job's **home** (`$LIGHTNING_ARTIFACTS_DIR`); collected and read back under `/teamspace/jobs/<name>/artifacts` — see below | none by default — route via `path_mappings={"<container-path>": "<connection>:<path>"}` |
 | scratch disks | `scratch_disks={"data": 100}` (GiB, under `/teamspace/scratch/`) | forbidden |
+
+### Outputs & artifacts (studio jobs)
+
+A studio job runs with its **home at the current-Studio home mount**,
+`/teamspace/studios/this_studio` — the canonical path (the same regardless of which
+Studio you launched from), and exactly where `$LIGHTNING_ARTIFACTS_DIR` points. To keep
+any output, **write it under home** (use the env var, don't hardcode) — every file the
+job **creates or modifies under home** during the run is captured as a job artifact.
+
+```python
+import os, joblib
+out = os.environ["LIGHTNING_ARTIFACTS_DIR"]     # == the source Studio's home path
+joblib.dump(model, f"{out}/model.joblib")        # a new/changed file under home -> artifact
+```
+
+Read the results back **from the source Studio**, under
+`/teamspace/jobs/<job-name>/artifacts/`. Two things that trip agents up:
+
+- **`/teamspace/jobs/<name>/artifacts` is read-only** — it is where you *read* a
+  finished job's artifacts from the Studio, **not** a path to write to during the run.
+  Writing there from inside the job fails with `OSError: [Errno 30] Read-only file
+  system`. Write to home / `$LIGHTNING_ARTIFACTS_DIR` instead.
+- **A job cannot mutate the live Studio filesystem.** Your outputs do **not** reappear
+  in the Studio's home after the run — they surface only under
+  `/teamspace/jobs/<name>/artifacts` (read-only) from the source Studio once the job
+  is terminal.
+
+Image (docker) jobs have no home-artifact collection — mount an output location with
+`path_mappings` (see the table above). As an explicit escape hatch from any job you can
+`lightning cp <file> lit://<owner>/<teamspace>/uploads/<path>` to the teamspace Drive,
+but for studio jobs writing to home is the intended path.
 
 ### Machines
 
@@ -145,7 +176,7 @@ for lr in ["1e-3", "3e-4", "1e-4"]:
     Job.run(name=f"sweep-lr-{lr}", machine=Machine.T4, studio="exp-1",
             command=f"python train.py --lr {lr}", env={"WANDB_RUN": f"lr-{lr}"},
             teamspace="my-teamspace", org="my-org", interruptible=True)
-# artifacts of each land in /teamspace/jobs/<name>/artifacts (studio jobs)
+# each writes outputs to home ($LIGHTNING_ARTIFACTS_DIR); read them from the Studio under /teamspace/jobs/<name>/artifacts
 ```
 
 **Distributed (2×L4, one process per node):**
@@ -171,6 +202,7 @@ lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -F limit=20
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - `job.logs` raises while the job is Pending/Running — poll `job.status` first, read logs after it reaches a terminal state.
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
+- Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
 - Job names must be unique per teamspace; omitted `--name` auto-generates one.
 - `--machine` flag is case-insensitive; A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
