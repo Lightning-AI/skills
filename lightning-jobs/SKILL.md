@@ -29,7 +29,7 @@ Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
 ## CLI reference
 
-Subcommands: `run`, `list`, `inspect`, `stop`, `delete`. **There is no `logs` or `status` CLI subcommand** — use `inspect` (JSON, includes status) or the Python SDK for logs.
+Subcommands: `run`, `list`, `inspect`, `logs`, `stop`, `delete`. `logs` reads a job's logs from the CLI — a snapshot by default, or `--follow` to stream a running job. `status` comes from `inspect` (JSON).
 
 ```bash
 # image job — NOTE: job/mmt run need --teamspace <name> --org <owner> (bare "owner/name" breaks headless, see Gotchas)
@@ -51,10 +51,18 @@ lightning job inspect my-job --teamspace owner/teamspace      # JSON incl. statu
 lightning job stop my-job --teamspace owner/teamspace
 lightning job delete my-job --teamspace owner/teamspace
 
+# logs — snapshot by default; --follow streams a running job until it finishes or Ctrl-C
+lightning job logs my-job --teamspace owner/teamspace [--follow] [--tail 100] [--timestamps]
+lightning job logs my-job --teamspace owner/teamspace --query error --severity error   # filter server-side
+lightning job logs my-job --teamspace owner/teamspace --since 2h --until 30m           # window: duration (30s/2h/3d/1w) or RFC3339
+
 # multi-machine training: same flags plus --num-machines
 lightning mmt run --name my-mmt --teamspace teamspace --org owner \
   --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
   --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
+
+# multi-machine logs: every rank merged and labelled (read one machine with `lightning job logs <machine-name>`)
+lightning mmt logs my-mmt --teamspace owner/teamspace [--follow] [--tail 50]
 ```
 
 ## Python SDK
@@ -79,7 +87,7 @@ print(job.link)                       # web UI URL
 job.wait(interval=10, timeout=3600, stop_on_timeout=True)   # blocks until terminal
 print(job.status)                     # Status.Completed / Failed / Stopped / Running / Pending
 if job.status == Status.Failed:
-    print(job.logs)                   # ONLY available once job is terminal (raises while running)
+    print(job.logs)                   # snapshot of logs so far (also: `lightning job logs <name>`)
 print(job.total_cost)                 # USD
 
 job.stop(); job.delete()
@@ -88,7 +96,7 @@ job.stop(); job.delete()
 mmt = MMT.run(name="my-mmt", num_machines=2, machine=Machine.L4, image="...", command="...", teamspace=ts)
 mmt.wait()
 for worker in mmt.machines:           # each worker is a Job
-    print(worker.name, worker.status) # worker.logs per node; mmt.logs raises NotImplementedError
+    print(worker.name, worker.status) # per-node logs via worker.logs; mmt.logs (or `lightning mmt logs`) merges all ranks
 ```
 
 Fetch an existing job: `Job("my-job", teamspace=ts)` (raises `ValueError` if it doesn't exist).
@@ -150,7 +158,7 @@ lightning job run --name fmt-check-$(date +%s) --teamspace my-teamspace --org my
 lightning job list --teamspace my-org/my-teamspace --sort-by status
 ```
 
-**Launch, wait, and fetch logs (the reliable agent loop — logs are SDK-only and terminal-state-only):**
+**Launch, wait, and fetch logs (the reliable agent loop):**
 
 ```python
 from lightning_sdk import Job, Machine, Status
@@ -159,14 +167,14 @@ job = Job.run(name="train-run-42", machine=Machine.L4, image="pytorch/pytorch:2.
               teamspace="my-teamspace", org="my-org", interruptible=True)
 job.wait(interval=15, timeout=2*3600, stop_on_timeout=True)
 print(job.status, f"${job.total_cost:.4f}")
-print(job.logs)          # safe now: job is terminal
+print(job.logs)          # full logs (job is terminal); stream a running job with: lightning job logs train-run-42 --follow
 ```
 
-One-liner to check an existing job from the shell:
+Check status and read logs of an existing job straight from the shell — works while it runs or after:
 
 ```bash
-uv run --with lightning-sdk python -c \
-  "from lightning_sdk import Job; j=Job('train-run-42', teamspace='my-teamspace', org='my-org'); print(j.status); print(j.logs if str(j.status) in ('Completed','Failed','Stopped') else '(still running)')"
+lightning job inspect train-run-42 --teamspace my-org/my-teamspace          # status / machine / cost as JSON
+lightning job logs    train-run-42 --teamspace my-org/my-teamspace --tail 50   # last 50 lines; add --follow to stream
 ```
 
 **Parameter sweep — several jobs from one loop:**
@@ -189,9 +197,10 @@ lightning mmt run --name ddp-test --teamspace my-teamspace --org my-org \
 
 ## Raw API fallback
 
-For what the CLI doesn't wrap (chiefly logs and exact-cost JSON). **Call these as plain
-GETs — do NOT add `-F limit=…`: a `-F` field flips the request into a spec'd form and the
-server rejects it with `400 "spec is required"` (see Gotchas). Slice client-side with `-q`.**
+For what the CLI doesn't wrap (chiefly exact-cost JSON and other raw resource fields —
+logs are now a first-class CLI command, see above). **Call these as plain GETs — do NOT
+add `-F limit=…`: a `-F` field flips the request into a spec'd form and the server rejects
+it with `400 "spec is required"` (see Gotchas). Slice client-side with `-q`.**
 
 ```bash
 PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
@@ -202,9 +211,6 @@ lightning api "/v1/projects/${PROJECT_ID}/jobs" -q '.jobs[] | [.id, .name] | @ts
 # inspect one job as JSON (status, machine, cost, timestamps) — by JOB ID (job_...), not name
 lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}"
 
-# logs (not exposed by CLI/SDK): returns a short-lived signed URL to the log file
-lightning api "/v1/projects/${PROJECT_ID}/jobs/${JOB_ID}/download-logs"
-
 # list multi-machine jobs — also a plain GET, no -F
 lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -q '.multiMachineJobs[].name'
 ```
@@ -212,12 +218,12 @@ lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -q '.multiMachineJ
 `JOB_ID` is the `job_...` id from the list call (these endpoints 404 on the human name).
 To find one job by name, **filter the list** — the `/jobs/find` route returns `501 Not
 Implemented`. For everyday use prefer the CLI: `lightning job list`, `lightning job
-inspect <name>`, `lightning mmt list`.
+inspect <name>`, `lightning job logs <name>`, `lightning mmt list`.
 
 ## Gotchas
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
-- `job.logs` raises while the job is Pending/Running — poll `job.status` first, read logs after it reaches a terminal state.
+- Logs read while a job runs, not just after: `lightning job logs <name> --follow` streams live, and `print(job.logs)` returns a snapshot of what's available so far. While a job is still `Pending` (no machine scheduled yet) there may be nothing to show.
 - On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` — a `-F` field turns the GET into a spec'd request and the server 400s with `"spec is required"` (jobs) / `"name is required"` (mmt). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name, and `/jobs/find` returns `501` (filter the list instead).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
 - Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
