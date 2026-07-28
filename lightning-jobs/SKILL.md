@@ -27,6 +27,8 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
+With a scoped API key, `lightning auth whoami` reports the bound org/teamspace (and role) directly — see the `lightning-auth` skill.
+
 ## CLI reference
 
 Subcommands: `run`, `list`, `inspect`, `stop`, `delete`. **There is no `logs` or `status` CLI subcommand** — use `inspect` (JSON, includes status) or the Python SDK for logs.

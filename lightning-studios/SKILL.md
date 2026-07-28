@@ -32,6 +32,8 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the user's choice so they aren't asked again: `lightning config set teamspace <owner>/<teamspace>`.
 
+With a scoped API key, `lightning auth whoami` reports the bound org/teamspace (and role) directly — see the `lightning-auth` skill.
+
 ## CLI reference
 
 `--teamspace` always takes `owner/teamspace`. Omitting `--name`/`--teamspace` in an interactive terminal opens a picker menu; in scripts always pass them explicitly.

@@ -27,6 +27,8 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
+With a scoped API key, `lightning auth whoami` reports the bound org/teamspace (and role) directly — see the `lightning-auth` skill.
+
 ## CLI reference
 
 Subcommands: `create`, `list`, `inspect`, `update`, `delete`, `logs`, `reload-weights`. There is no `stop` — stopping = scaling to zero via `update --min-replicas 0 --max-replicas 0`.
