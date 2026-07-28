@@ -42,6 +42,11 @@ lightning deployment create llama --teamspace owner/teamspace \
   [--hf-token-secret <secret-name>] [--tensor-parallel-size 2] [--max-model-len 8192] \
   [--quantization fp8] [--dtype bfloat16] [--dry-run] [--force]
 
+# cloud account — defaults to lightning-public-prod and prints a notice saying so.
+# Other deployments in the same teamspace may sit on a different account, which
+# `deployment list` shows in its last column; match it with --cloud when relevant.
+lightning deployment create ... --cloud gcp-lightning-public-prod
+
 # autoscaling / env / secrets
 lightning deployment create ... \
   --min-replicas 0 --max-replicas 4 --autoscale-metric GPU --autoscale-threshold 90 \
@@ -76,7 +81,7 @@ dep = Deployment("my-api", teamspace="my-teamspace", org="my-org")   # SDK takes
 dep.start(
     image="nginx:latest",
     machine=Machine.CPU,
-    ports=80,                                   # REQUIRED for non-model deployments
+    ports=[80],                                 # REQUIRED for non-model deployments; a LIST, not an int
     autoscale=AutoScaleConfig(min_replicas=0, max_replicas=4, metric="CPU", threshold=90),
     env=[Env("MODE", "prod"), Secret("HF_TOKEN")],   # or a plain dict for env vars
     auth=ApiKeyAuth(),                          # None => PUBLIC endpoint
@@ -94,7 +99,43 @@ dep.update(min_replicas=1, max_replicas=8)      # scaling: no new release, no st
 dep.stop()                                      # scales to 0; blocks until replicas reach 0
 ```
 
-HuggingFace model serving via SDK: `dep.start(model="meta-llama/...", machine=Machine.L40S, ports=8000, hf_token_secret="...")` — `image`/`studio` must be None; still pass `ports`.
+HuggingFace model serving via SDK: `dep.start(model="meta-llama/...", machine=Machine.L40S, ports=[8000], hf_token_secret="...")` — `image`/`studio` must be None; still pass `ports`.
+
+### Private container images
+
+A deployment whose image needs registry credentials must set
+`V1JobSpec.image_secret_ref` to the name of a `SECRET_TYPE_DOCKER_REGISTRY`
+secret in the teamspace. **Neither the CLI nor `Deployment.start()` exposes
+this**, and the server rejects an unpullable image with a bare
+`500` — `Exception: The jobs_service_create_deployment_with_http_info request
+failed to reach the server, response: 500.` — which names neither the image nor
+the missing credential. Until the SDK exposes it, patch the field onto the
+create request:
+
+```python
+from lightning_sdk.lightning_cloud.openapi.api import jobs_service_api
+
+_create = jobs_service_api.JobsServiceApi.jobs_service_create_deployment_with_http_info
+
+def _with_image_secret(self, body, project_id, **kwargs):
+    if getattr(body, "spec", None) is not None:
+        body.spec.image_secret_ref = "MY_REGISTRY_SECRET"
+    return _create(self, body, project_id, **kwargs)
+
+jobs_service_api.JobsServiceApi.jobs_service_create_deployment_with_http_info = _with_image_secret
+```
+
+List the teamspace's secrets, and their types, with:
+
+```bash
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[] | select(.name=="<teamspace>") | .projectId')
+lightning api "/v1/projects/${PROJECT_ID}/secrets" | jq -r '.secrets[] | "\(.name) \(.type)"'
+```
+
+Diagnosing this 500 is much faster if you bisect against a **public** image
+first (`nginx:latest`): if that create succeeds with otherwise identical
+arguments, the image is the variable, not the machine, port, replica counts or
+cloud account.
 
 **Trap:** `dep.delete()` does NOT delete the deployment — it is an HTTP helper like `dep.get()`/`dep.post()` and sends an HTTP `DELETE` request to the deployed service's endpoint. To delete the deployment resource use `lightning deployment delete NAME --yes` or the raw API.
 
@@ -153,7 +194,11 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - `min_replicas=0` enables scale-to-zero (idle replicas stop; cold start on next request, tunable via `AutoScaleConfig(idle_threshold_seconds=...)`). `min_replicas >= 1` bills continuously — flag this cost to the user.
 - Changing image/machine/command/env/entrypoint/spot forces a new release; the SDK raises `RuntimeError` if no `release_strategy` is passed (the CLI auto-adds a rolling update).
 - `Deployment.start()` on an existing deployment silently becomes an update/restart — it won't error on a name collision.
-- A port is mandatory for non-model deployments (`ValueError` otherwise); `--model` defaults to 8000 and requires a GPU machine.
+- A port is mandatory for non-model deployments (`ValueError` otherwise); `--model` defaults to 8000 and requires a GPU machine. In the SDK `ports` must be a **list** — passing an int fails with `TypeError: 'int' object is not iterable` raised from inside the SDK, which does not mention `ports`.
+- `AutoScaleConfig` accepts no `metric` at construction, then `start()` raises `ValueError: The autoscaling metric is required. Currently supported metrics are ['GPU', 'CPU', 'RPM']`. Always pass `metric=`; the traceback points at `start()`, not at the config object.
+- A private image needs `image_secret_ref`, which no CLI flag or SDK argument sets — see [Private container images](#private-container-images). The failure is an opaque `500`.
+- `Secret("NAME")` serializes with an empty `name` field, so `deployment inspect` shows `{"from_secret": "NAME", "name": "", "value": ""}`. That is not a bug: the platform resolves the reference and names the environment variable after the secret. Verified by reading `env` inside a running replica.
+- Deployment logs are readable by anyone with teamspace access. A container that echoes its environment on boot will therefore leak secret values into `deployment logs` — do not debug secret injection that way on a real secret.
 - Deleting is destructive and the CLI prompts unless `--yes`; confirm with the user first.
 - `--model` deployments may return validation warnings; re-run with `--ack <code>` or `--force`, and use `--dry-run` to preview the resolved vLLM config.
 - In the Python SDK, `teamspace=` must be the bare teamspace name with `org=`/`user=` passed separately; `Deployment("x", teamspace="owner/name")` fails with "Teamspace owner/name does not exist" — and in headless (env-var auth) runs that error is masked by a misleading "Neither name is provided nor can the user be inferred from the environment variable!".
