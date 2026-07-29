@@ -27,6 +27,15 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
+**From a scoped API key** (an agent, no user to ask): the key has exactly one membership. `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`):
+
+```bash
+M=$(lightning api /v1/memberships)
+TS=$(echo "$M" | jq -r '.memberships[0].name')                                                  # teamspace
+OWNER=$(lightning api "/v1/orgs/$(echo "$M" | jq -r '.memberships[0].ownerId')" | jq -r .name)   # owner (org) slug
+lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
+```
+
 ## CLI reference
 
 Subcommands: `create`, `list`, `inspect`, `update`, `delete`, `logs`, `reload-weights`. There is no `stop` — stopping = scaling to zero via `update --min-replicas 0 --max-replicas 0`.
