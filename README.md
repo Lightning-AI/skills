@@ -7,7 +7,7 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | Skill | What it covers |
 |---|---|
 | [`lightning-studios`](lightning-studios/SKILL.md) | Create, start, stop and manage cloud GPU Studios; switch machines, run commands, transfer files, SSH |
-| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, collect artifacts |
+| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, SSH into running jobs/MMTs, collect artifacts |
 | [`lightning-deployments`](lightning-deployments/SKILL.md) | Deploy containers/APIs with autoscaling, manage releases, endpoints and auth |
 | [`lightning-sandboxes`](lightning-sandboxes/SKILL.md) | Fast ephemeral VMs for safe code execution: run commands, background processes, file I/O |
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
