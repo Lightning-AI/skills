@@ -69,7 +69,9 @@ lightning deployment create ... \
 # operate
 lightning deployment list --teamspace owner/teamspace [--all] [--sort-by state]
 lightning deployment inspect my-api --teamspace owner/teamspace     # full JSON incl. endpoint URLs
-lightning deployment logs my-api --teamspace owner/teamspace [-f] [--tail 100]
+lightning deployment logs my-api --teamspace owner/teamspace [-f] [--tail 100] [--timestamps]
+lightning deployment logs my-api --teamspace owner/teamspace --query timeout --severity error   # filter server-side
+lightning deployment logs my-api --teamspace owner/teamspace --since 30m --until 5m             # window (replicas merged + labelled)
 lightning deployment update my-api --teamspace owner/teamspace --max-replicas 8
 lightning deployment update my-api --teamspace owner/teamspace --min-replicas 0 --max-replicas 0   # "stop"
 lightning deployment update my-api --teamspace owner/teamspace --image myimg:v2 [--max-surge 1] [--max-unavailable 0]  # new release, rolling update
