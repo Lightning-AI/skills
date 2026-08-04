@@ -1,6 +1,6 @@
 ---
 name: lightning-blog
-description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (uvx lightning-sdk) - create a draft, write the body as EditorJS blocks, set title/description/slug/category/author/social image/published date, upload images, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this into a blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
+description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (uvx lightning-sdk) - create a draft, import a Markdown file with the bundled md2blocks.py converter, write the body as EditorJS blocks, turn SVG charts and diagrams into dark-mode PNGs and upload them, set title/description/slug/category/author/social image/published date, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, chart, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this markdown/writeup into a blog post", "add a chart to the blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
 ---
 
 # Lightning AI blog (author, edit and publish lightning.ai/blog posts)
@@ -241,7 +241,96 @@ Prose that actually reads like the Lightning blog: a `header`-per-section, short
 paragraphs, a `list` where you'd otherwise write a run-on sentence, a `code`
 block for anything a reader would copy, and a `table` for before/after numbers.
 
-## Images
+## Import a Markdown draft (`md2blocks.py`)
+
+Most posts start life as a Markdown file. `md2blocks.py`, next to this skill,
+converts one into blocks so you don't hand-build the JSON:
+
+```bash
+python3 md2blocks.py draft.md > /tmp/post.json     # or "-" for stdin
+```
+
+It handles headings (`##` → `header` level 1 sections), paragraphs, nested
+bullet/numbered lists, fenced code with its language, GFM tables, `---` rules,
+images, block quotes (→ emphasised paragraph, since the editor has no quote
+tool), and inline `**bold**` / `*italic*` / `` `code` `` / links — escaping HTML
+as it goes. The leading `# Title` is dropped (it belongs in the post metadata;
+`--keep-title` overrides).
+
+It prints a TODO list on **stderr** for everything needing a human: each
+`![](…)` whose URL isn't a lightning.ai storage URL yet, and each
+`<figure>`/`<svg>` — those become empty `image` blocks (caption taken from the
+SVG `<title>`) for you to rasterize, upload and patch:
+
+```
+46 blocks: {'paragraph': 29, 'list': 3, 'header': 7, 'table': 1, 'image': 5, 'delimiter': 1}
+TODO figure 1: rasterize the SVG, upload it, patch image block 8
+```
+
+Read the converted blocks before pushing them — check the tables, and re-check
+any paragraph that mixed Markdown with raw HTML.
+
+## Images, charts and diagrams
+
+### House style
+
+Existing posts use **dark-canvas** charts: a `#16161d` panel that sits a shade
+above the page's near-black background, light text, one accent hue, and a source
+line. Reuse that palette so a new chart doesn't look pasted in:
+
+| Role | Colour |
+|---|---|
+| canvas | `#16161d` |
+| primary text | `#f4f4f5` · secondary `#a1a1aa` |
+| brand accent | `#8b5cf6` (violet) / `#a78bfa` light |
+| categorical series | `#38bdf8` sky · `#22c55e` green · `#f97316` orange · `#a78bfa` violet |
+
+If a `dataviz` skill is installed, follow it for chart *design* (form choice,
+palette rules, labelling) and this section for getting the result onto the blog.
+Put the source attribution in the block `caption` as well as in the chart, so it
+survives if someone re-uses the image.
+
+### Author the chart as SVG, then rasterize
+
+Upload **PNG**. Write the chart as SVG (hand-written, or exported from
+matplotlib/plotly/d3) and rasterize it — but SVG written for a web page needs
+three fixes first, or the PNG comes out wrong:
+
+- **No `currentColor`.** Rasterizers resolve it to **black**, which is invisible
+  on a dark canvas. Pin every `currentColor` to a literal (`#f4f4f5`).
+- **No external CSS, webfonts, or `<style>` rules** — only presentation
+  attributes and `style="…"` on the element. The renderer has no Inter, so it
+  substitutes a wider fallback: leave slack around edge-anchored text.
+- **Pad the `viewBox`** rather than moving coordinates, so that wider fallback
+  text doesn't clip at the border.
+
+```bash
+# 1. fix colours and pad the viewBox (26px sides, 10px top/bottom)
+python3 - chart.svg <<'EOF'
+import re, sys, pathlib
+p = pathlib.Path(sys.argv[1]); s = p.read_text().replace('currentColor', '#f4f4f5')
+m = re.search(r'viewBox="([\d.\- ]+)"', s); x, y, w, h = map(float, m.group(1).split())
+p.write_text(s[:m.start()] + f'viewBox="{x-26:g} {y-10:g} {w+52:g} {h+20:g}"' + s[m.end():])
+EOF
+
+# 2. rasterize at ~2x display width for retina, on the dark canvas
+rsvg-convert -w 1400 --background-color="#16161d" -o chart.png chart.svg
+# brew install librsvg  (or: python3 -m pip install cairosvg && cairosvg -W 1400 …)
+
+# no rsvg? headless Chrome works too:
+# "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+#   --window-size=1400,1000 --default-background-color=16161d \
+#   --screenshot=chart.png "file://$PWD/chart.svg"
+
+# 3. LOOK at it before uploading — clipped labels and black-on-black text are
+#    invisible in the JSON but obvious in the PNG.
+du -k chart.png     # keep well under 500 KB (the editor's cap for the social image)
+```
+
+Screenshots, photos and matplotlib output need none of this — just check the
+width (≥1200 px reads well) and the file size.
+
+### Upload and place
 
 Images (both the social/list image and inline `image` blocks) are uploaded to
 the post's **lit page**. This endpoint is multipart, which `lightning api`
@@ -267,9 +356,38 @@ or as an inline block:
 {"type":"image","data":{"file":{"url":"…"},"caption":"Cold-start breakdown","withBorder":false,"stretched":false,"withBackground":false}}
 ```
 
-Accepted: JPEG, PNG, GIF, WebP. The editor caps the social image at 500 KB and
-the customer logo at 100 KB — stay under those so the post can still be edited
-in the UI.
+To fill in several figures at once — e.g. the empty `image` blocks `md2blocks.py`
+left behind — upload in document order and patch them in the same order:
+
+```bash
+# uploaded.txt: one "<name>\t<url>" line per figure, in the order they appear
+python3 - <<'EOF'
+import json
+blocks = json.load(open('/tmp/post.json'))
+urls = [line.split('\t')[1].strip() for line in open('uploaded.txt')]
+empty = [b for b in blocks['blocks'] if b['type'] == 'image' and not b['data']['file']['url']]
+assert len(empty) == len(urls), (len(empty), len(urls))
+for block, url in zip(empty, urls):
+    block['data']['file']['url'] = url
+json.dump(blocks, open('/tmp/post.json', 'w'), ensure_ascii=False)
+EOF
+```
+
+Accepted: JPEG, PNG, GIF, WebP — plus `.svg`, which the endpoint takes based on
+the file extension (verified). Prefer PNG anyway: it's what every existing post
+uses, social/OG previews need a raster image, and an SVG loaded through `<img>`
+gets no page CSS, so it needs the same explicit-colour treatment as a rasterized
+one. The editor caps the social image at 500 KB and the customer logo at 100 KB —
+stay under those so the post can still be edited in the UI.
+
+Finally, **look at the rendered post**, not just the JSON — the blog renders
+client-side, so `curl` shows nothing:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+  --window-size=1300,2400 --virtual-time-budget=15000 --screenshot=render.png \
+  "https://lightning.ai/blog/$SLUG"
+```
 
 ## Find, list and delete posts
 
@@ -300,6 +418,14 @@ Check `internalBlogAdmin` → `POST /v1/blog-posts` (title, description,
 `list`/`code`/`table`) → PUT the lit page with `published:false` → upload the
 chart PNG and set it as `imageUrl` → set `unpublishedAccessViaLink=true` and
 hand back the draft URL → **ask** before publishing.
+
+**"Post this Markdown file, it has charts in it."**
+`md2blocks.py draft.md > /tmp/post.json` → create the post → for each figure the
+TODO list names: fix `currentColor`, pad the `viewBox`, `rsvg-convert -w 1400
+--background-color="#16161d"`, eyeball the PNG → upload all of them in document
+order, patch the empty `image` blocks, add captions with the source line → PUT
+the body with the shortened slug → pick the strongest chart as `imageUrl` →
+screenshot the draft URL to confirm it renders → hand back the link and **ask**.
 
 **"Fix the slug and author on the July recap, then publish it."**
 `GET /v1/blog-posts/<slug>` for the ids and current content → resolve the author
@@ -371,3 +497,15 @@ Every item here is a real error hit while testing against production
 - **The blog renders client-side**, so `curl`ing the page URL tells you nothing
   about the content. Check the API response, or open the URL in a browser, to
   verify how a post looks.
+- **`PUT /v1/blog-posts/{id}` returns `litPage.path` as `""`** — the response
+  builder drops it. The slug is fine; re-`GET` the post if you need to read it
+  back. Don't "fix" the empty value by PUTting the lit page with a guess.
+- **`currentColor` in an SVG rasterizes to black** — invisible on the dark
+  canvas, and equally invisible when the SVG is uploaded as-is and shown through
+  `<img>`. Every colour in a chart destined for the blog must be a literal.
+- **Rasterizers don't have Inter**, so text renders wider than in the browser and
+  edge-anchored labels clip at the `viewBox` border. Pad the viewBox and look at
+  the PNG before uploading.
+- **Uploads are keyed to the lit page** (`/v1/media/lit_page/{PAGE_ID}/image`),
+  not the post id, and the bucket is public — anything uploaded is world-readable
+  immediately, before the post is published.
