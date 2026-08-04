@@ -13,6 +13,7 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
+| [`lightning-blog`](lightning-blog/SKILL.md) | Write, edit, illustrate and publish posts on `lightning.ai/blog`: draft-first authoring in EditorJS blocks, metadata/slug/author/social image, draft review links, publish and unpublish (needs the internal blog-admin flag) |
 
 All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI (runnable via `uvx`), plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
 
