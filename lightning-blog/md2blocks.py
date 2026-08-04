@@ -146,12 +146,14 @@ class Converter:
     def list(self, lines: list[str], i: int) -> int:
         style = "ordered" if ORDERED.match(lines[i]) else "unordered"
         items: list[dict] = []
+        created: list[dict] = []
         stack: list[tuple[int, dict]] = []  # (indent, item)
         while i < len(lines):
             m = BULLET.match(lines[i]) or ORDERED.match(lines[i])
             if m:
                 indent = len(m.group(1).expandtabs(4))
-                item = {"content": inline(m.group(2)), "items": []}
+                item = {"content": m.group(2), "items": []}
+                created.append(item)
                 while stack and stack[-1][0] >= indent:
                     stack.pop()
                 (stack[-1][1]["items"] if stack else items).append(item)
@@ -159,10 +161,14 @@ class Converter:
                 i += 1
             elif lines[i].strip() and lines[i][:1].isspace() and stack:
                 # continuation line of the current item
-                stack[-1][1]["content"] += " " + inline(lines[i].strip())
+                stack[-1][1]["content"] += " " + lines[i].strip()
                 i += 1
             else:
                 break
+        # Convert once per item, after wrapped lines are joined — otherwise inline
+        # markup split across a line break ("**two\nwords**") never matches.
+        for item in created:
+            item["content"] = inline(item["content"])
         self.blocks.append({"type": "list", "data": {"style": style, "items": items}})
         return i
 
