@@ -41,15 +41,19 @@ lightning config set teamspace "$OWNER/$TS"     # every command now defaults her
 Subcommands: `run`, `list`, `inspect`, `logs`, `ssh`, `stop`, `delete` (same set on `mmt`, plus `--rank` on `mmt ssh`). `logs` reads a job's logs from the CLI — a snapshot by default, or `--follow` to stream a running job. **There is no `status` subcommand** — `status` comes from `inspect` (JSON).
 
 ```bash
-# image job — NOTE: job/mmt run need --teamspace <name> --org <owner> (bare "owner/name" breaks headless, see Gotchas)
-lightning job run --name my-job --teamspace teamspace --org owner \
+# image job
+lightning job run --name my-job --teamspace owner/teamspace \
   --image python:3.11-slim --machine CPU \
   --command "python -c 'print(\"hello\")'" \
   [-e KEY=VALUE ...] [--interruptible] [--cloud PROVIDER]
 
 # studio job (snapshot of an existing studio's environment; command required)
-lightning job run --name my-job --teamspace teamspace --org owner \
+lightning job run --name my-job --teamspace owner/teamspace \
   --studio my-studio --machine A100 --command "python train.py"
+
+# omit both --studio and --image while running inside a Studio to target THAT Studio
+# (only if its teamspace matches the resolved --teamspace) — no lookup needed:
+lightning job run --name my-job --teamspace owner/teamspace --machine A100 --command "python train.py"
 
 # private registry image
 lightning job run ... --image-credentials <secret-name> [--cloud-account-auth]  # --cloud-account-auth for ECR-type registries
@@ -69,7 +73,7 @@ lightning job logs my-job --teamspace owner/teamspace --since 2h --until 30m    
 lightning job ssh my-job --teamspace owner/teamspace
 
 # multi-machine training: same flags plus --num-machines
-lightning mmt run --name my-mmt --teamspace teamspace --org owner \
+lightning mmt run --name my-mmt --teamspace owner/teamspace \
   --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
   --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
 
@@ -115,6 +119,8 @@ for worker in mmt.machines:           # each worker is a Job
 ```
 
 Fetch an existing job: `Job("my-job", teamspace=ts)` (raises `ValueError` if it doesn't exist).
+
+Leaving both `studio=` and `image=` unset targets the Studio you're currently running inside (via `LIGHTNING_CLOUD_SPACE_ID`), if its teamspace matches — see Gotchas.
 
 ### Image vs studio jobs
 
@@ -167,7 +173,7 @@ Prompts this skill handles: *"run this script on an A100 as a batch job"*, *"lau
 **Run a containerized script and report the outcome:**
 
 ```bash
-lightning job run --name fmt-check-$(date +%s) --teamspace my-teamspace --org my-org \
+lightning job run --name fmt-check-$(date +%s) --teamspace my-org/my-teamspace \
   --image python:3.11-slim --machine CPU \
   --command "pip install ruff && ruff check ." 
 lightning job list --teamspace my-org/my-teamspace --sort-by status
@@ -179,7 +185,7 @@ lightning job list --teamspace my-org/my-teamspace --sort-by status
 from lightning_sdk import Job, Machine, Status
 job = Job.run(name="train-run-42", machine=Machine.L4, image="pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime",
               command="python -c 'import torch; print(torch.cuda.is_available())'",
-              teamspace="my-teamspace", org="my-org", interruptible=True)
+              teamspace="my-org/my-teamspace", interruptible=True)
 job.wait(interval=15, timeout=2*3600, stop_on_timeout=True)
 print(job.status, f"${job.total_cost:.4f}")
 print(job.logs)          # full logs (job is terminal); stream a running job with: lightning job logs train-run-42 --follow
@@ -198,14 +204,14 @@ lightning job logs    train-run-42 --teamspace my-org/my-teamspace --tail 50   #
 for lr in ["1e-3", "3e-4", "1e-4"]:
     Job.run(name=f"sweep-lr-{lr}", machine=Machine.T4, studio="exp-1",
             command=f"python train.py --lr {lr}", env={"WANDB_RUN": f"lr-{lr}"},
-            teamspace="my-teamspace", org="my-org", interruptible=True)
+            teamspace="my-org/my-teamspace", interruptible=True)
 # each writes outputs to home ($LIGHTNING_ARTIFACTS_DIR); read them from the Studio under /teamspace/jobs/<name>/artifacts
 ```
 
 **Distributed (2×L4, one process per node):**
 
 ```bash
-lightning mmt run --name ddp-test --teamspace my-teamspace --org my-org \
+lightning mmt run --name ddp-test --teamspace my-org/my-teamspace \
   --image pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime --num-machines 2 --machine L4 \
   --command "python -m torch.distributed.run --nproc_per_node=1 train.py"
 ```
@@ -254,10 +260,10 @@ inspect <name>`, `lightning job logs <name>`, `lightning mmt list`.
 - `lightning job ssh` / `lightning mmt ssh` only work while the target is **Running** — Pending/Completed/Failed/Stopped raise a clean error. For multi-machine jobs use `mmt ssh --rank N` (defaults to 0); `job ssh` has no `--rank`.
 - On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` — a `-F` field turns the GET into a spec'd request and the server 400s with `"spec is required"` (jobs) / `"name is required"` (mmt). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name, and `/jobs/find` returns `501` (filter the list instead).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
+- Omitting **both** `--studio` and `--image` (Python: leaving both `studio=` and `image=` unset) does not error — it defaults to the Studio you're currently running inside, resolved via the `LIGHTNING_CLOUD_SPACE_ID` env var, as long as that Studio's teamspace matches the resolved `--teamspace`. Useful for "run this script from my current Studio" without looking up the Studio's name first. If you're not running inside a Studio (or the teamspace doesn't match), omitting both raises an error asking for one explicitly.
 - Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
 - Job names must be unique per teamspace; omitted `--name` auto-generates one.
 - `--machine` flag is case-insensitive; A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
-- `job run`/`mmt run` fail with `--teamspace owner/name` when the username can't be resolved (headless env-var auth): the real error "Teamspace owner/name does not exist" is masked by "Neither name is provided nor can the user be inferred from the environment variable!". Pass `--teamspace <name> --org <owner>` instead. `job list`/`inspect`/`stop`/`delete`/`ssh` accept `owner/name` fine.
-- Same rule in Python: `Job.run(..., teamspace="<name>", org="<owner>")` — a combined `"owner/name"` string is not valid for `teamspace=` in SDK classes.
+- `--org`/`--org=` on `job run`/`mmt run` is deprecated (the CLI prints a `DeprecationWarning` and will remove it) in favor of the combined `--teamspace owner/teamspace` form, which works fine headlessly as of `lightning-sdk` 2026.8.5 — verified against a live env-var-only auth session. Older guidance told you to split `--teamspace <name> --org <owner>` to dodge a headless-auth resolution bug; if you're on an SDK version old enough to still hit "Neither name is provided nor can the user be inferred from the environment variable!" on the combined form, fall back to the split flags, but prefer combined `owner/teamspace` first and only split if it actually errors.
 - Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.
