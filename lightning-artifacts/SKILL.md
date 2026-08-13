@@ -48,12 +48,15 @@ lightning api /v1/memberships -q '.memberships[] | [.ownerType, .name, .projectI
 ```
 
 Pick the row you want and capture its `projectId`, then resolve that project's
-cloud account (the `clusterId`, required on the upload + publish calls). Any
-cluster bound to the project works — `clusters[0]` is fine:
+cloud account (the `clusterId`, required on the upload + publish calls). **Pick a
+cluster that is actually running** — a project can have clusters bound to it that
+are not usable, and the upload fails against those:
 
 ```bash
 PID=<projectId-from-above>
-CLUSTER=$(lightning api "/v1/projects/$PID/clusters" -q '.clusters[0].id' | tr -d '"')   # e.g. "aws-use1"
+CLUSTER=$(lightning api "/v1/projects/$PID/clusters" \
+  -q '[.clusters[] | select(.status.phase == "CLUSTER_STATE_RUNNING")][0].id' | tr -d '"')
+echo "$CLUSTER"   # e.g. "lightning-public-prod" — must be non-empty before you continue
 ```
 
 ## Publish a durable link (the CLI flow)
@@ -186,9 +189,27 @@ URL=$(share model-metrics.json)
 
 - **`clusterId` is required** on both calls — a query param on the upload `PUT`,
   a `-f` field on the register `POST`. Resolve it from `/v1/projects/{pid}/clusters`;
-  any cluster bound to the project works, and one that isn't errors with
-  `cluster "…" is not bound to this project`. Omit it and you get `drive: invalid
-  request: project artifacts require a ClusterID`.
+  one that isn't bound errors with `cluster "…" is not bound to this project`. Omit
+  it and you get `drive: invalid request: project artifacts require a ClusterID`.
+- **Being bound to the project is not enough — the cluster must be `RUNNING`.** Taking
+  `clusters[0]` blindly is a real trap: on a stock account the first entry is
+  `lightning-vultr-prod` with `status.phase: CLUSTER_STATE_PENDING` (and every region
+  `REGION_STATE_FAILED`), while the other eight are `CLUSTER_STATE_RUNNING`. The upload
+  `PUT` then fails on a drive error that says nothing about cluster health. Always
+  filter on `.status.phase == "CLUSTER_STATE_RUNNING"`.
+- **There is no way to list what is already in `artifacts/`.**
+  `GET /v1/projects/{pid}/storage?prefix=artifacts/` returns `HTTP 501 Not Implemented`
+  (`{"code": 12, "message": "Method Not Allowed"}`) even though `DELETE` on the same
+  path works. Track what you uploaded yourself; you cannot enumerate it afterwards.
+- **Delete and unpublish both report success for things that don't exist.** The storage
+  `DELETE` returns a bare `{}` whether or not it removed anything, and
+  `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}` for an
+  id that was already revoked or simply mistyped. Do not treat exit code 0 as proof;
+  verify by re-fetching the public URL and checking it 404s.
+- **The served HTML is not byte-identical to what you uploaded.** Cloudflare injects a
+  Browser-Insights RUM beacon (`static.cloudflareinsights.com/beacon.min.js`) into HTML
+  responses — a ~350-byte delta. Harmless for viewing, but don't promise a
+  bit-exact document, and don't checksum the response against the source file.
 - **On DELETE, `-f` fields land in the request body**, which the storage API
   ignores — it wants query params. Inline them in the path:
   `"/v1/projects/$PID/storage?clusterId=…&filename=…"`.
