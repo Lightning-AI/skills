@@ -56,13 +56,13 @@ lightning sandbox commands <SANDBOX_ID>                  # history
 # lifecycle
 lightning sandbox stop   <SANDBOX_ID>    # persistent: auto-snapshot + pause; ephemeral: == delete
 lightning sandbox start  <SANDBOX_ID>    # resume a stopped persistent sandbox
-lightning sandbox delete <SANDBOX_ID>    # destroys sandbox AND its auto-snapshot
+lightning sandbox delete <SANDBOX_ID> -y # destroys sandbox AND its auto-snapshot; -y required non-interactively
 
 # snapshots (filesystem only — running processes are not preserved)
 lightning sandbox snapshot create <SANDBOX_ID> [--expiration <MS>] [--exclude PATH]
 lightning sandbox snapshot list [--name N] [--teamspace owner/teamspace]
 lightning sandbox snapshot get <SNAPSHOT_ID>
-lightning sandbox snapshot delete <SNAPSHOT_ID>
+lightning sandbox snapshot delete <SNAPSHOT_ID> -y
 ```
 
 There is no `cp`/upload CLI — move files via `run` with shell commands, or the SDK file API below.
@@ -139,7 +139,7 @@ lightning sandbox run $SBX -- python --version
 lightning sandbox run $SBX --cwd /workspace -- bash -lc "pip install requests && python -c 'import requests; print(requests.__version__)'"
 lightning sandbox run $SBX --detached -- bash -lc "pytest -q > /workspace/test.log 2>&1"   # prints cmd_id
 lightning sandbox command $SBX <cmd_id>          # poll status + output
-lightning sandbox delete $SBX
+lightning sandbox delete $SBX -y
 ```
 
 **Try out a custom image:**
@@ -176,6 +176,11 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls 
 
 - **Timeout units differ:** `create --timeout` / `extend_timeout()` / snapshot `--expiration` are **milliseconds**; `sandbox run --timeout` (detached wait) is **seconds**.
 - Sandboxes keep billing until stopped/deleted and are not cleaned up by garbage collection — always `stop()`/`delete()`, and set a create-time `timeout` as a safety net.
+- **`sandbox delete` and `sandbox snapshot delete` prompt for confirmation — pass `-y`/`--yes` non-interactively.** Without it they read the prompt from a closed stdin, print `Are you sure you want to delete? [y/N]: Aborted.` and exit **without deleting**. Given the point above, a cleanup step that silently aborts leaves the sandbox billing indefinitely — this is the single easiest way to leak money here.
+- **A CIDR allowlist does not implicitly permit DNS.** `allow_cidrs` is enforced at the IP layer, and the sandbox's `/etc/resolv.conf` points at `1.1.1.1` and `8.8.8.8` — outside any realistic application allowlist — so every hostname lookup fails with `Temporary failure in name resolution` while raw-IP connections work. Include the resolver addresses (`1.1.1.1/32`, `8.8.8.8/32`) in the allowlist, or point the sandbox at a resolver inside it.
+- **Files restored from a snapshot come back with mtime `1970-01-01T00:00:00Z`.** Epoch-zero timestamps break `make`, `ccache`, and pip/setuptools staleness checks — which bites hardest in the pre-baked-environment use case snapshots exist for. Touch files you depend on, or avoid mtime-based staleness logic in a restored sandbox.
+- **Egress policy is Python-SDK-only.** `sandbox create` has no network-policy flag, so `deny-all` and CIDR allowlists require dropping into `lightning_sdk`; everything else here (create, run, snapshot, list, delete) is CLI-doable.
+- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced `lightning machine list` catalog — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
 - Ephemeral (default) sandboxes lose everything on stop; only `persistent=True` gives stop/resume. Snapshots capture the filesystem only, never running processes.
 - **The default runtime is `node24` — Node.js only, no Python.** Pass `runtime="python313"` / `--runtime python313` for Python workloads (naming: `node22`, `node24`, `python313`; invalid ids fail with "invalid runtime"). `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
 - Network policy is **create-time only** — you cannot change egress rules on a running sandbox. Default is open egress (`allow-all`); use `"deny-all"` or CIDR allowlists for untrusted code.
