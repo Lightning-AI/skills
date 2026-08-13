@@ -13,8 +13,8 @@ presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
 **This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`) —
-authenticated REST calls via `lightning api` against the project storage API,
-plus one unauthenticated `curl` PUT to a presigned URL. No Python, no SDK code.
+authenticated REST calls via `lightning api` against the project artifacts API.
+No Python, no SDK code, not even a `curl`.
 
 ## Setup & auth
 
@@ -48,7 +48,8 @@ lightning api /v1/memberships -q '.memberships[] | [.ownerType, .name, .projectI
 ```
 
 Pick the row you want and capture its `projectId`, then resolve that project's
-cloud account (the `clusterId`, required on the storage + publish calls):
+cloud account (the `clusterId`, required on the upload + publish calls). Any
+cluster bound to the project works — `clusters[0]` is fine:
 
 ```bash
 PID=<projectId-from-above>
@@ -57,9 +58,8 @@ CLUSTER=$(lightning api "/v1/projects/$PID/clusters" -q '.clusters[0].id' | tr -
 
 ## Publish a durable link (the CLI flow)
 
-The project storage API does a standard multipart upload: start it, fetch a
-presigned URL per part, `PUT` the bytes straight to cloud storage, finalize,
-then register the object as a shared artifact. Copy-paste function:
+Two steps: `PUT` the file to the artifacts blob route, then register the object
+as a shared artifact. Both are plain `lightning api` calls. Copy-paste function:
 
 ```bash
 # share <local-file> [remote-name] [content-type]
@@ -70,21 +70,10 @@ then register the object as a shared artifact. Copy-paste function:
 share() {
   local FILE="$1" NAME="${2:-$(basename "$1")}" CT="${3:-$(file -b --mime-type "$1")}"
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
-  # 1. start the upload
-  local UP; UP=$(printf '{"clusterId":"%s","filename":"%s"}' "$CLUSTER" "$KEY" \
-    | lightning api "/v1/projects/$PID/storage" -X POST --input /dev/stdin -q .uploadId | tr -d '"') || return 1
-  # 2. presigned URL for part 1 (single part is fine up to 5 GiB)
-  local PART_URL; PART_URL=$(printf '{"clusterId":"%s","filename":"%s","parts":[1]}' "$CLUSTER" "$KEY" \
-    | lightning api "/v1/projects/$PID/storage/uploads/$UP" -X POST --input /dev/stdin -q '.urls[0].url' | tr -d '"') || return 1
-  # 3. PUT the bytes straight to storage (no auth — the URL is presigned); keep the ETag
-  local ETAG; ETAG=$(curl -sf -D - -o /dev/null -X PUT "$PART_URL" \
-    -H "Content-Type: $CT" --data-binary @"$FILE" \
-    | tr -d '\r"' | awk 'tolower($1)=="etag:"{print $2}') || return 1
-  # 4. finalize the upload
-  printf '{"clusterId":"%s","filename":"%s","uploadId":"%s","parts":[{"partNumber":1,"etag":"%s"}]}' \
-    "$CLUSTER" "$KEY" "$UP" "$ETAG" \
-    | lightning api "/v1/projects/$PID/storage/complete" -X POST --input /dev/stdin --silent || return 1
-  # 5. register it -> durable, no-expiry lightning.ai/artifacts/<id>
+  # 1. upload the bytes straight to the blob route (clusterId is a query param)
+  lightning api "/v1/projects/$PID/artifacts/blobs/$KEY?clusterId=$CLUSTER" \
+    -X PUT --input "$FILE" || return 1
+  # 2. register it -> durable, no-expiry lightning.ai/artifacts/<id>
   local LINK; LINK=$(lightning api "/v1/projects/$PID/shared-artifacts" -X POST \
     -f clusterId="$CLUSTER" -f filename="$KEY" -f contentType="$CT" -F private=false -q .url | tr -d '"')
   echo "✅ Published $NAME ($CT)" >&2
@@ -165,7 +154,7 @@ lightning api "/v1/projects/$PID/storage?clusterId=$CLUSTER&filename=artifacts/r
 
 Re-publish the same object later (new id, new URL) by repeating the publish call
 with the same `filename`. Update the contents behind an existing link by
-re-uploading (steps 1–4 of `share`) to the same `artifacts/<name>` — published ids
+re-uploading (step 1 of `share`) to the same `artifacts/<name>` — published ids
 keep serving the new bytes. To change the served Content-Type, publish again.
 
 ## Example workflows
@@ -195,19 +184,16 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
-- **`clusterId` is required** on the storage and publish calls, or the storage
-  layer errors. Resolve it from `/v1/projects/{pid}/clusters`.
-- **Repeated/nested fields can't be expressed with `-f`** (`parts: [1]`,
-  `parts: [{partNumber, etag}]`) — pipe a JSON body via `--input /dev/stdin`
-  instead, as `share` does. Remember `-f` fields turn into query params when
-  `--input` is present.
+- **`clusterId` is required** on both calls — a query param on the upload `PUT`,
+  a `-f` field on the register `POST`. Resolve it from `/v1/projects/{pid}/clusters`;
+  any cluster bound to the project works, and one that isn't errors with
+  `cluster "…" is not bound to this project`. Omit it and you get `drive: invalid
+  request: project artifacts require a ClusterID`.
 - **On DELETE, `-f` fields land in the request body**, which the storage API
   ignores — it wants query params. Inline them in the path:
   `"/v1/projects/$PID/storage?clusterId=…&filename=…"`.
-- **The ETag header comes back wrapped in quotes** from cloud storage — strip
-  them before the `complete` call (the `tr -d '\r"'` in `share` does).
 - **Shares are confined to the `artifacts/` folder.** Publish only finds objects
-  under `projects/{pid}/artifacts/...`, so the upload `filename` must start with
+  under `projects/{pid}/artifacts/...`, so the upload `path` must start with
   `artifacts/`. Files under `Uploads/` or the `lightning_storage` Drive are a
   different backend and won't be found — `lightning cp` targets those, so it is
   **not** the upload to use here.
@@ -222,7 +208,3 @@ URL=$(share model-metrics.json)
   /v1/projects/{pid}/shared-artifacts` returns HTTP 501 "Method Not Allowed" on
   control planes built before mid-July 2026 — publish/unpublish still work
   there; only `shares` is affected.
-- **Files over 5 GiB** need more than one part: request them all in step 2
-  (`"parts": [1, 2, …]`), PUT each chunk (every part except the last must be
-  ≥ 5 MiB), and pass all `{partNumber, etag}` pairs to `complete`. A single part
-  covers the typical report/one-pager by a wide margin.
