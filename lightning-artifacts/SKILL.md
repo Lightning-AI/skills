@@ -13,8 +13,8 @@ presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
 **This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`) —
-authenticated REST calls via `lightning api` against the project artifacts API,
-plus one unauthenticated `curl` PUT to a presigned URL. No Python, no SDK code.
+authenticated REST calls via `lightning api` against the project artifacts API.
+No Python, no SDK code, not even a `curl`.
 
 ## Setup & auth
 
@@ -58,9 +58,8 @@ CLUSTER=$(lightning api "/v1/projects/$PID/clusters" -q '.clusters[0].id' | tr -
 
 ## Publish a durable link (the CLI flow)
 
-Three steps: ask the artifacts API for a presigned upload URL, `PUT` the bytes
-straight to cloud storage, then register the object as a shared artifact.
-Copy-paste function:
+Two steps: `PUT` the file to the artifacts blob route, then register the object
+as a shared artifact. Both are plain `lightning api` calls. Copy-paste function:
 
 ```bash
 # share <local-file> [remote-name] [content-type]
@@ -71,17 +70,10 @@ Copy-paste function:
 share() {
   local FILE="$1" NAME="${2:-$(basename "$1")}" CT="${3:-$(file -b --mime-type "$1")}"
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
-  local SIZE; SIZE=$(stat -c%s "$FILE")
-  # 1. request a presigned upload URL for the blob.  NOTE: cluster_id is
-  #    snake_case here (camelCase is silently ignored -> "require a ClusterID").
-  local URL; URL=$(printf '{"cluster_id":"%s","blobs":[{"path":"%s","size":%s}]}' "$CLUSTER" "$KEY" "$SIZE" \
-    | lightning api "/v1/projects/$PID/artifacts/blobs" -X POST --input /dev/stdin \
-        -q '.results[0].urls[0].url' | tr -d '"') || return 1
-  [ -n "$URL" ] || { echo "no upload url returned" >&2; return 1; }
-  # 2. PUT the bytes straight to storage (no auth — the URL is presigned)
-  curl -sf -o /dev/null -X PUT "$URL" -H "Content-Type: $CT" --data-binary @"$FILE" || return 1
-  # 3. register it -> durable, no-expiry lightning.ai/artifacts/<id>.
-  #    NOTE: the register call wants clusterId in camelCase (yes, it differs from step 1).
+  # 1. upload the bytes straight to the blob route (clusterId is a query param)
+  lightning api "/v1/projects/$PID/artifacts/blobs/$KEY?clusterId=$CLUSTER" \
+    -X PUT --input "$FILE" || return 1
+  # 2. register it -> durable, no-expiry lightning.ai/artifacts/<id>
   local LINK; LINK=$(lightning api "/v1/projects/$PID/shared-artifacts" -X POST \
     -f clusterId="$CLUSTER" -f filename="$KEY" -f contentType="$CT" -F private=false -q .url | tr -d '"')
   echo "✅ Published $NAME ($CT)" >&2
@@ -162,7 +154,7 @@ lightning api "/v1/projects/$PID/storage?clusterId=$CLUSTER&filename=artifacts/r
 
 Re-publish the same object later (new id, new URL) by repeating the publish call
 with the same `filename`. Update the contents behind an existing link by
-re-uploading (steps 1–2 of `share`) to the same `artifacts/<name>` — published ids
+re-uploading (step 1 of `share`) to the same `artifacts/<name>` — published ids
 keep serving the new bytes. To change the served Content-Type, publish again.
 
 ## Example workflows
@@ -192,27 +184,14 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
-- **`clusterId` is required, and its casing differs by endpoint.** The upload
-  call (`/artifacts/blobs`) wants **`cluster_id` (snake_case)** in the JSON body;
-  camelCase is silently ignored and you get `drive: invalid request: project
-  artifacts require a ClusterID`. The register (`/shared-artifacts`) and delete
-  calls want **`clusterId` (camelCase)**. Resolve the value from
-  `/v1/projects/{pid}/clusters` — any cluster bound to the project works; one not
-  bound errors with `cluster "…" is not bound to this project`.
-- **The upload body needs `--input`, not `-f`.** The `blobs` array
-  (`blobs: [{path, size}]`) can't be expressed with repeated `-f` flags — pipe a
-  JSON body via `--input /dev/stdin`, as `share` does. (`-f` fields turn into
-  query params when `--input` is present.)
+- **`clusterId` is required** on both calls — a query param on the upload `PUT`,
+  a `-f` field on the register `POST`. Resolve it from `/v1/projects/{pid}/clusters`;
+  any cluster bound to the project works, and one that isn't errors with
+  `cluster "…" is not bound to this project`. Omit it and you get `drive: invalid
+  request: project artifacts require a ClusterID`.
 - **On DELETE, `-f` fields land in the request body**, which the storage API
   ignores — it wants query params. Inline them in the path:
-  `"/v1/projects/$PID/storage?clusterId=…&filename=…"`. (Deleting a file still
-  goes through `/storage`; only *uploading* moved to `/artifacts/blobs`.)
-- **Uploads go through `/artifacts/blobs`, not `/storage`.** The old
-  `POST /v1/projects/{pid}/storage` multipart flow now rejects artifact paths with
-  `this endpoint only accepts logs/ and metrics/ paths; upload teamspace files
-  via POST /v1/projects/{project_id}/artifacts/blobs`. The blobs endpoint returns
-  a presigned `results[0].urls[0].url` you `PUT` to directly — no start/finalize
-  handshake, no ETag bookkeeping.
+  `"/v1/projects/$PID/storage?clusterId=…&filename=…"`.
 - **Shares are confined to the `artifacts/` folder.** Publish only finds objects
   under `projects/{pid}/artifacts/...`, so the upload `path` must start with
   `artifacts/`. Files under `Uploads/` or the `lightning_storage` Drive are a
@@ -221,10 +200,6 @@ URL=$(share model-metrics.json)
 - **Content-Type is set at publish time**, not upload time — the serving handler
   uses the shared-artifact record's `contentType`, overriding the stored object.
   Set it on the publish call so HTML/PDF render inline.
-- **`LIGHTNING_CLOUD_URL` may be preset inside a Studio.** A Lightning Studio can
-  carry `LIGHTNING_CLOUD_URL` pointing at the studio's own cloudspace host (not
-  the control plane), so `lightning api` calls fail DNS resolution. `export
-  LIGHTNING_CLOUD_URL=https://lightning.ai` (or unset it) before these commands.
 - The public link is genuinely open — anyone with it can fetch the file with no
   auth. Use `-F private=true` for anything you don't want world-readable.
 - `-q` (jq filtering) needs the `jq` binary installed; without it, drop `-q` and
@@ -233,8 +208,3 @@ URL=$(share model-metrics.json)
   /v1/projects/{pid}/shared-artifacts` returns HTTP 501 "Method Not Allowed" on
   control planes built before mid-July 2026 — publish/unpublish still work
   there; only `shares` is affected.
-- **Large files still come back as a single presigned `PUT`.** The blobs endpoint
-  returned one `urls[0]` with `complete_required: false` even for a 6 GiB blob, so
-  the one-`PUT` flow above covers the typical report/one-pager by a wide margin. If
-  a response ever includes multiple `urls` or `complete_required: true`, `PUT` each
-  URL in order and finalize before registering.
