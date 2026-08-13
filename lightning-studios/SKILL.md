@@ -57,7 +57,7 @@ lightning studio start --name my-studio --teamspace owner/teamspace --gpus L4:4 
 lightning studio list --teamspace owner/teamspace [--all] [--sort-by status]   # default lists only your studios
 lightning studio switch --name my-studio --teamspace owner/teamspace --machine A100   # requires Running studio
 lightning studio stop --name my-studio --teamspace owner/teamspace
-lightning studio delete --name my-studio --teamspace owner/teamspace           # interactive confirmation prompt
+lightning studio delete --name my-studio --teamspace owner/teamspace -y        # -y/--yes: required non-interactively
 
 # ssh / one-shot connect (create + start + ssh)
 lightning studio ssh --name my-studio --teamspace owner/teamspace
@@ -159,7 +159,8 @@ For anything the CLI doesn't wrap, `lightning api <path>` makes an authenticated
 ```bash
 lightning api /v1/memberships -q '.memberships[].name'
 PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
-lightning api "/v1/projects/${PROJECT_ID}/cloud-spaces" -F limit=20     # studios are "cloud spaces" in the API
+# studios are "cloudspaces" in the API — one word, and call it BARE (see Gotchas)
+lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 ```
 
 ## Gotchas
@@ -168,7 +169,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloud-spaces" -F limit=20     # studio
 - `run*` methods and `studio switch` require status `Running`; `start()` on a studio already running on a different machine raises — use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
 - `studio create` does not attach compute; `studio start --create` does both.
-- `lightning studio delete` prompts for confirmation — in non-interactive contexts confirm with the user first, then use the Python SDK `studio.delete()`.
+- **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
+- **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because a `-F` field turns the GET into a spec'd request. Call it bare and slice with `-q`.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
 - `lightning cp lit://.../file.txt file.txt` (bare local filename as destination) fails with `FileNotFoundError: [Errno 2] ... ''` — write the destination as `./file.txt` or a directory path.
 - In Python, `teamspace=` takes the bare teamspace name with `org=`/`user=` separate; `"owner/name"` combined strings only work in CLI `--teamspace` flags.
