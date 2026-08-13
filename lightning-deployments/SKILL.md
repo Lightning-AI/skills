@@ -27,12 +27,13 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
-**From a scoped API key** (an agent, no user to ask): the key has exactly one membership. `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`):
+**From a scoped API key** (an agent, no user to ask): `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`). **Select the `organization` entry rather than `.memberships[0]`**: the same teamspace is commonly listed twice, once with `ownerType: organization` and once with `ownerType: user` (identical `projectId` and `name`), so index 0 is a coin flip and the `user` row's `ownerId` will not resolve against `/v1/orgs`.
 
 ```bash
 M=$(lightning api /v1/memberships)
-TS=$(echo "$M" | jq -r '.memberships[0].name')                                                  # teamspace
-OWNER=$(lightning api "/v1/orgs/$(echo "$M" | jq -r '.memberships[0].ownerId')" | jq -r .name)   # owner (org) slug
+ROW=$(echo "$M" | jq -c '[.memberships[] | select(.ownerType=="organization")][0] // .memberships[0]')
+TS=$(echo "$ROW" | jq -r .name)                                                        # teamspace
+OWNER=$(lightning api "/v1/orgs/$(echo "$ROW" | jq -r .ownerId)" | jq -r .name)         # owner (org) slug
 lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
 ```
 
@@ -59,7 +60,7 @@ lightning deployment create ... --cloud gcp-lightning-public-prod
 # autoscaling / env / secrets
 lightning deployment create ... \
   --min-replicas 0 --max-replicas 4 --autoscale-metric GPU --autoscale-threshold 90 \
-  -e KEY=VALUE --secret MY_LIGHTNING_SECRET --interruptible
+  -e KEY=VALUE --secret MY_LIGHTNING_SECRET --interruptible   # CHECK THE SPOT PRICE FIRST — see Gotchas
 
 # endpoint auth — mutually exclusive; OMITTING ALL THREE MAKES THE ENDPOINT PUBLIC
   --api-key-auth                    # require a Lightning API key (Bearer)
@@ -202,7 +203,10 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 ## Gotchas
 
 - Omitting all auth flags creates a **publicly reachable endpoint** — confirm that's intended; default to `--api-key-auth` otherwise.
-- `min_replicas=0` enables scale-to-zero (idle replicas stop; cold start on next request, tunable via `AutoScaleConfig(idle_threshold_seconds=...)`). `min_replicas >= 1` bills continuously — flag this cost to the user.
+- **`--interruptible` is not reliably cheaper — check the price before you pass it.** On GCP the L4 is **$0.48/hr on-demand but $0.727/hr spot**: interruptible costs 51% *more* and you take preemption risk for the privilege. Nothing warns you at create time. Fetch both rates from the accelerator catalog first (see the `lightning-cost-estimation` skill) and take `min(cost, spotPrice)`; spot is only reliably cheaper on some SKUs and clouds.
+- `min_replicas=0` enables scale-to-zero and **genuinely stops billing at zero** — a teamspace credit balance stays flat while a deployment sits at zero replicas. The next request is served transparently: the edge accepts the connection and *holds it open* until a replica is ready (~6 minutes on a GPU image) and then returns a normal 200 — it does not return 503 or refuse, so any client without a short timeout just waits. `min_replicas >= 1` bills continuously — flag this cost to the user.
+- **The idle window before scale-to-zero is SDK-only.** `AutoScaleConfig(idle_threshold_seconds=...)` has no equivalent flag on `deployment create` or `deployment update`, so from the CLI you get the default and cannot tune how long a replica lingers.
+- **A health check is SDK-only too.** `HttpHealthCheck(path=..., port=...)` exists in Python but there is no `--health-check-path`/`--readiness-probe` flag, so a CLI-created deployment has nothing stopping traffic reaching a replica that is up but not ready.
 - Changing image/machine/command/env/entrypoint/spot forces a new release; the SDK raises `RuntimeError` if no `release_strategy` is passed (the CLI auto-adds a rolling update).
 - `Deployment.start()` on an existing deployment silently becomes an update/restart — it won't error on a name collision.
 - A port is mandatory for non-model deployments (`ValueError` otherwise); `--model` defaults to 8000 and requires a GPU machine. In the SDK `ports` must be a **list** — passing an int fails with `TypeError: 'int' object is not iterable` raised from inside the SDK, which does not mention `ports`.
@@ -210,6 +214,9 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - A private image needs `image_secret_ref`, which no CLI flag or SDK argument sets — see [Private container images](#private-container-images). The failure is an opaque `500`.
 - `Secret("NAME")` serializes with an empty `name` field, so `deployment inspect` shows `{"from_secret": "NAME", "name": "", "value": ""}`. That is not a bug: the platform resolves the reference and names the environment variable after the secret. Verified by reading `env` inside a running replica.
 - Deployment logs are readable by anyone with teamspace access. A container that echoes its environment on boot will therefore leak secret values into `deployment logs` — do not debug secret injection that way on a real secret.
-- Deleting is destructive and the CLI prompts unless `--yes`; confirm with the user first.
-- `--model` deployments may return validation warnings; re-run with `--ack <code>` or `--force`, and use `--dry-run` to preview the resolved vLLM config.
+- Deleting is destructive and the CLI prompts unless `--yes`; confirm with the user first. **`Deployment deleted` is not "gone"** — the deployment keeps appearing in `deployment list` (and `list --all`) for 90 seconds to ~2.5 minutes afterwards, sometimes in `PENDING` with a stale replica count and `deletedAt: None`. Don't treat a post-delete listing as a failed delete, and don't poll `list` to confirm teardown; re-issue `delete` only if it is still there after a few minutes.
+- **`deployment logs` without `-f` can hang indefinitely.** A bounded read (`--tail 25`, no `--follow`) has been observed producing no output at all and never returning, so a scripted log fetch needs its own timeout. `-f` works.
+- **There is no cost surface for a deployment.** `deployment inspect` exposes `total_cost`, but it reads `0.0` even after ~34 minutes of L4 GPU time (~$0.40 of real spend), and stays 0 for the deployment's whole life — unlike jobs, whose `total_cost` does populate. No billing/usage endpoint resolves either. The only way to see what a deployment cost is to difference the teamspace credit balance before and after, and that field flips between full float precision and 2-decimal rounding between consecutive calls — so difference over a window long enough that the rounding is noise.
+- `--model` deployments may return validation warnings; re-run with `--ack <code>` or `--force`, and use `--dry-run` to preview the resolved vLLM config — though `--dry-run` prints only `served_model_name` and `weight_source`, not the machine, resolved vLLM args, image variant or replica config.
+- **`--model` may be gated on your account, and the refusal is an opaque `403`.** `deployment create ... --model <hf-id>` can fail with `Exception: The jobs_service_create_deployment_with_http_info request failed to reach the server, response: 403.` — no server message, and `LIGHTNING_DEBUG=1` adds a traceback but still no reason. It is an entitlement, not a bad argument, so don't debug the model id or flags. Fall back to deploying a vLLM container image directly (`--image`), which needs no entitlement.
 - In the Python SDK, `teamspace=` must be the bare teamspace name with `org=`/`user=` passed separately; `Deployment("x", teamspace="owner/name")` fails with "Teamspace owner/name does not exist" — and in headless (env-var auth) runs that error is masked by a misleading "Neither name is provided nor can the user be inferred from the environment variable!".
