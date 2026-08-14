@@ -203,9 +203,18 @@ total_usd    = compute_usd + storage_usd
   `lightning-llm-gateway` skill: a dedicated GPU only wins above a fairly high steady load.
 - **Spot / interruptible** (`--interruptible`, `interruptible=True`) is typically 15–60% off, but
   can be preempted — only recommend it for checkpointed training, never for a serving SLA.
-- **Pending time is not billed**, but a long `availableInSeconds` delays the run, not the bill.
+- **Billing covers the whole machine-allocation window, not just your workload.** The bill runs
+  from `startedAt` to `stoppedAt`, which includes the image pull — and the SDK reports the job as
+  `Pending` for most of that pull. Budget for it: a large image can add several minutes of billed
+  time before your first line of code runs. Quote container startup as a separate line item, or
+  give the estimate as a range.
 - Every account gets **one free 4-CPU Studio**; additional machines bill at list rate.
-- Data connections are not billed; only Drive storage above 10 GB is.
+- **Folders are billed, connections are not — and the API calls both "data connections".** Data
+  *added* to a teamspace as a **folder** is internal storage and bills like Drive. Data
+  *connected* from outside (an S3/GCS bucket you already own and pay for) is **not** billed by
+  Lightning. Both appear under `/v1/projects/<pid>/data-connections`, so the endpoint name tells
+  you nothing — go by `isBillableFolder: true`. `Teamspace.new_folder()` creates the **billed**
+  kind, so a "just put the dataset somewhere reusable" step is a storage line item, not free.
 
 Always state assumptions with the number: rate, instance count, hours, spot-or-on-demand,
 storage, and the date you fetched prices.
@@ -316,8 +325,10 @@ curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=AWS" \
 lightning job inspect <job-name> --teamspace <owner>/<teamspace>
 ```
 
-The Python SDK exposes the same catalog as `Machine` objects with `.cost` / `.interruptible_cost`,
-and `job.total_cost` gives the realized USD for a finished job (see the `lightning-jobs` skill).
+`job.total_cost` gives the realized USD for a finished job (see the `lightning-jobs` skill), but
+**wait for it to settle** — see the Gotchas below. There is no working programmatic price lookup
+in the Python SDK: `Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant,
+so prices must come from the REST catalog above.
 
 ## Snapshot (fetched 2026-07-30 — sanity check only, re-fetch before quoting)
 
@@ -349,6 +360,21 @@ $2.69–6.23 · `data-prep-ultra-extra-large` $4.79–9.25.
 
 ## Gotchas
 
+- **`Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant.** `.slug` is
+  populated, so the object looks hydrated and the `None` reads like a bug. There is no
+  programmatic price lookup — use the REST accelerator catalog and join as described above.
+- **`job.total_cost` is provisional when a job first reports terminal, and keeps climbing.** It is
+  not flagged as incomplete. A job that settled at `$0.16257313` read `$0.15243042` the moment
+  `job.wait()` returned, and rose for ~2.5 minutes before stabilising; another read exactly `0.0`
+  for 45–85s after finishing. **Never quote the first value.** Poll until it is unchanged across
+  two or three reads before reporting a realized cost, and treat `0.0` on a just-finished job as
+  "not computed yet", not "free".
+- **The image pull is billed, and it is billed as `Pending`.** Billing spans
+  `startedAt`→`stoppedAt`. A 1200-second training run on a `pytorch/pytorch` image billed 1683
+  seconds — a 397-second image pull, during which the SDK reported `Pending`, plus shutdown. At
+  spot `$0.34775/h` that is `1683 × 0.34775 / 3600 = $0.16257`, exactly the settled bill, versus
+  `$0.1159` for the training time alone. **Estimating from workload duration alone under-quotes
+  by ~40% on a short job.** The smaller the job, the worse the ratio.
 - **`cost` is per instance, not per GPU.** `gpu-h100-8x` at `36` is $36/hr for all 8 GPUs
   ($4.50/GPU-hr). Quoting it as per-GPU inflates an estimate 8×.
 - **`spotPrice: 0` means "no spot on this provider"** (Lambda, Nebius, Voltage Park all report
@@ -379,7 +405,13 @@ $2.69–6.23 · `data-prep-ultra-extra-large` $4.79–9.25.
   `isTierRestricted` — a free-tier account can't launch them at any price.
 - Storage is **$0.10/GB/month above the first 10 GB, billed daily** — trivial for code, material
   for training: 20 TB of checkpoints is ~$2,047/month. Always ask about checkpoint/dataset size
-  for multi-week training quotes.
+  for multi-week training quotes. Count teamspace **folders** in that figure (see the folder vs
+  connection note above); an externally connected bucket is billed by its own cloud, not here.
+- **Stored bytes are not observable from the platform.** `currentStorageBytes` on
+  `/v1/memberships` does not move when a folder is created, filled or deleted — it read
+  byte-identical before, during and after storing 1.078 GB in a folder flagged
+  `isBillableFolder: true`. Size the storage line from what you know you uploaded; you cannot
+  reconcile it against the platform afterwards.
 - Estimates for model training are **estimates**. MFU, dataloader stalls, restarts and multi-node
   scaling losses move the real number by tens of percent — give a range and list the assumptions
   rather than a single confident figure.
