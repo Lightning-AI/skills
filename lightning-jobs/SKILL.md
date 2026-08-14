@@ -62,7 +62,7 @@ lightning job run ... --image-credentials <secret-name> [--cloud-account-auth]  
 lightning job list --teamspace owner/teamspace [--all] [--sort-by status]
 lightning job inspect my-job --teamspace owner/teamspace      # JSON incl. status, machine, cost
 lightning job stop my-job --teamspace owner/teamspace
-lightning job delete my-job --teamspace owner/teamspace
+lightning job delete my-job --teamspace owner/teamspace -y   # -y/--yes: required non-interactively
 
 # logs — snapshot by default; --follow streams a running job until it finishes or Ctrl-C
 lightning job logs my-job --teamspace owner/teamspace [--follow] [--tail 100] [--timestamps]
@@ -256,6 +256,10 @@ inspect <name>`, `lightning job logs <name>`, `lightning mmt list`.
 ## Gotchas
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
+- **`lightning job delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it the command reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**. The job stays listed and keeps costing money, and the failure is easy to miss in a log.
+- **`--query`, `--severity` and `--timestamps` can silently do nothing on a *finished* job.** Where a job's logs are stored decides this, and you cannot tell from the outside: if its lines aren't in the newer log storage, a finished job falls back to its saved log file, and that path ignores all three flags. `--query <term>` and `--severity <level>` then return **zero lines** for every value while the same command unfiltered returns the full log, and `--timestamps` output is byte-for-byte identical to plain output. Nothing warns you, so an empty result is indistinguishable from "no matches". **Don't trust a filtered read of a finished job** — fetch unfiltered and filter locally (`grep`). While a job is still `Running` the flags are applied server-side and work.
+- **`job inspect` does not emit parseable JSON.** It pretty-prints to terminal width and hard-wraps long values — notably `command` — inserting raw newlines inside JSON strings, so `jq` fails with `Invalid string: control characters from U+0000 through U+001F must be escaped`. Don't build a polling loop on `job inspect | jq`; use `lightning api "/v1/projects/$PID/jobs"` and filter with `-q`, or `job logs --json`.
+- **`job inspect` has no exit code, failure message, or timestamps** — it returns only `command`, `image`, `machine`, `name`, `status`, `studio`, `teamspace`, `total_cost`, and the SDK `Job` object exposes no equivalents either. To find out *why* and *when* a job failed, read the raw record's `message` field: `lightning api "/v1/projects/$PID/jobs" -q '.jobs[] | select(.name=="<name>") | .message'`.
 - Logs read while a job runs, not just after: `lightning job logs <name> --follow` streams live, and `print(job.logs)` returns a snapshot of what's available so far. While a job is still `Pending` (no machine scheduled yet) there may be nothing to show.
 - `lightning job ssh` / `lightning mmt ssh` only work while the target is **Running** — Pending/Completed/Failed/Stopped raise a clean error. For multi-machine jobs use `mmt ssh --rank N` (defaults to 0); `job ssh` has no `--rank`.
 - On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` — a `-F` field turns the GET into a spec'd request and the server 400s with `"spec is required"` (jobs) / `"name is required"` (mmt). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name, and `/jobs/find` returns `501` (filter the list instead).
