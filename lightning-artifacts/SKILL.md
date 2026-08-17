@@ -81,8 +81,8 @@ share() {
   # 1. upload; cp picks the teamspace's default cloud account and prints which
   lightning cp "$FILE" "lit://$OWNER/$TSNAME/$KEY" >&2 || return 1
   # 2. the blob's clusterId from the listing is the storage cluster the
-  #    publish and delete calls need (see Gotchas — it is not always the
-  #    cluster the upload went through)
+  #    publish call needs (see Gotchas — it is not always the cluster the
+  #    upload went through)
   local CLUSTER; CLUSTER=$(lightning api "/v1/projects/$PID/artifacts/trees/$(dirname "$KEY")" \
     -q ".tree[] | select(.path == \"$(basename "$KEY")\") | .clusterId" | tr -d '"')
   # 3. register it -> durable, no-expiry lightning.ai/artifacts/<id>
@@ -128,7 +128,7 @@ right there is what makes HTML/PDF render instead of download.
 
 **List what's in the drive** — the artifacts tree route serves any folder,
 with `recursive=true` to flatten it. Each blob row carries the `clusterId` the
-delete call needs:
+publish call needs:
 
 ```bash
 # ls [subfolder]  ->  "<clusterId>  <size>  <path>" per file
@@ -167,11 +167,12 @@ unshare art_01kxgaep54zzs84arfns1j21wd
 ```
 
 **Delete the file itself** (after unpublishing, or to clean up an abandoned
-upload). `clusterId` is the storage cluster the listing reports for that blob;
-note the query params inline in the path — see Gotchas:
+upload) — no cluster id needed; the server removes it wherever it is stored.
+A folder and everything under it deletes the same way via `trees/`:
 
 ```bash
-lightning api "/v1/projects/$PID/storage?clusterId=<from-listing>&filename=artifacts/report.html" -X DELETE
+lightning api "/v1/projects/$PID/artifacts/blobs/artifacts/report.html" -X DELETE
+lightning api "/v1/projects/$PID/artifacts/trees/artifacts/reports" -X DELETE
 ```
 
 Re-publish the same object later (new id, new URL) by repeating the publish call
@@ -206,20 +207,20 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
-- **Publish and delete want the blob's *storage* cluster, not the cluster the
-  upload went through.** A teamspace can be bound to compute clusters that
-  store their files under a parent cluster's bucket; publishing with such a
-  compute cluster's id fails with HTTP 500, and deleting with it silently
-  removes nothing. The artifacts tree listing reports each blob's real
-  `clusterId` — always read it from there (the `share` function does).
+- **Publish wants the blob's *storage* cluster, not the cluster the upload
+  went through.** A teamspace can be bound to compute clusters that store
+  their files under a parent cluster's bucket; publishing with such a compute
+  cluster's id fails with HTTP 500. The artifacts tree listing reports each
+  blob's real `clusterId` — always read it from there (the `share` function
+  does). Deletes don't take a cluster at all.
 - **`lightning cp` needs no cluster flag** — it resolves the teamspace's
   default cloud account and prints which it chose. Pass
   `--cloud-account <id>` only to steer placement deliberately, and pick a
   cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
   (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the
   upload fail with a drive error that says nothing about cluster health.
-- **Delete and unpublish both report success for things that don't exist.** The storage
-  `DELETE` returns a bare `{}` whether or not it removed anything, and
+- **Delete and unpublish both report success for things that don't exist.** The
+  file/folder `DELETE` succeeds whether or not it removed anything, and
   `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}` for an
   id that was already revoked or simply mistyped. Do not treat exit code 0 as proof;
   verify with the tree listing (for the file) or by checking the public URL 404s
@@ -228,9 +229,6 @@ URL=$(share model-metrics.json)
   Browser-Insights RUM beacon (`static.cloudflareinsights.com/beacon.min.js`) into HTML
   responses — a ~350-byte delta. Harmless for viewing, but don't promise a
   bit-exact document, and don't checksum the response against the source file.
-- **On DELETE, `-f` fields land in the request body**, which the storage API
-  ignores — it wants query params. Inline them in the path:
-  `"/v1/projects/$PID/storage?clusterId=…&filename=…"`.
 - **Shares are confined to the `artifacts/` folder.** Publish only finds objects
   under `projects/{pid}/artifacts/...`, so the upload must target
   `lit://<owner>/<teamspace>/artifacts/...`. Files under `uploads/` or
