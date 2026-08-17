@@ -157,6 +157,20 @@ Read the results back **from the source Studio**, under
   `/teamspace/jobs/<name>/artifacts` (read-only) from the source Studio once the job
   is terminal.
 
+**Fetch artifacts from anywhere** — the capture also surfaces in the teamspace
+Drive under `jobs/<job-name>/`, so reading it does not require a Studio:
+
+```bash
+lightning cp lit://<owner>/<teamspace>/jobs/<job-name>/model.joblib ./model.joblib   # one file
+lightning cp -r lit://<owner>/<teamspace>/jobs/<job-name>/outputs/ ./outputs         # a folder
+```
+
+The capture can hold much more than the files you wrote — up to the job's whole
+home — so copy the specific files or subfolder rather than the whole
+`jobs/<job-name>/` tree. To see what's there first:
+`lightning api "/v1/projects/<pid>/artifacts/trees/jobs/<job-name>?recursive=true"`.
+Deleting the job deletes this tree with it.
+
 Image (docker) jobs have no home-artifact collection — mount an output location with
 `path_mappings` (see the table above). As an explicit escape hatch from any job you can
 `lightning cp <file> lit://<owner>/<teamspace>/uploads/<path>` to the teamspace Drive,
