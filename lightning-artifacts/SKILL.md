@@ -1,6 +1,6 @@
 ---
 name: lightning-artifacts
-description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's published, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (uvx lightning-sdk) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
+description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (uvx lightning-sdk) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
 ---
 
 # Lightning AI Artifacts (durable shareable file links)
@@ -12,9 +12,10 @@ The control plane streams the bytes from storage on every request, so unlike a
 presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
-**This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`) —
-authenticated REST calls via `lightning api` against the project artifacts API.
-No Python, no SDK code, not even a `curl`.
+**This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`):
+`lightning cp` uploads the file, and `lightning api` — a `gh api`-style raw
+HTTP client — makes the two REST calls around it. No Python, no SDK code, not
+even a `curl`.
 
 ## Setup & auth
 
@@ -30,39 +31,43 @@ extra auth steps. Get a key from lightning.ai → user/org settings, or
 key** — read it from the environment. To target a non-prod control plane, set
 `LIGHTNING_CLOUD_URL` (default `https://lightning.ai`).
 
-`lightning api` is a `gh api`-style raw HTTP client: `-X` method, `-f key=val`
-string field, `-F key=val` typed field, `-H` header, `--input <file>` request
-body (`--input /dev/stdin` to pipe one), `-q` jq filter (needs the `jq` binary
-for `-q`), `-i` include response headers. Fields are JSON body for
-POST/PUT-with-body and **query params** when the request also has `--input` or
-is a GET.
+`lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
+typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
+to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
+response headers. Fields are JSON body for POST/PUT-with-body and **query
+params** when the request also has `--input` or is a GET.
 
-## Resolve teamspace, project id, and cloud account (do this first)
+## Resolve the teamspace (do this first)
 
-Artifacts live in a teamspace (a "project" in the REST API). **Never guess.**
-List memberships and, if more than one fits and none is configured, **ask the
-user which to use**:
+Artifacts live in a teamspace (a "project" in the REST API). You need three
+values: the **owner name** and **teamspace name** (for `lit://` upload URLs)
+and the **project id** (for the REST calls). **Never guess.** List memberships
+and, if more than one fits and none is configured, **ask the user which to
+use**:
 
 ```bash
-lightning api /v1/memberships -q '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
+lightning api /v1/memberships -q '.memberships[] | [.name, .projectId, .ownerType, .ownerId] | @tsv'
 ```
 
-Pick the row you want and capture its `projectId`, then resolve that project's
-cloud account (the `clusterId`, required on the upload + publish calls). **Pick a
-cluster that is actually running** — a project can have clusters bound to it that
-are not usable, and the upload fails against those:
+Capture the row's `projectId` and resolve the owner's name (teamspaces are
+org-owned; the membership only carries the id):
 
 ```bash
 PID=<projectId-from-above>
-CLUSTER=$(lightning api "/v1/projects/$PID/clusters" \
-  -q '[.clusters[] | select(.status.phase == "CLUSTER_STATE_RUNNING")][0].id' | tr -d '"')
-echo "$CLUSTER"   # e.g. "lightning-public-prod" — must be non-empty before you continue
+OWNER=$(lightning api "/v1/orgs/<ownerId-from-above>" -q .name | tr -d '"')
+TSNAME=<name-from-above>
 ```
+
+Teamspaces you can access through org-level permissions (rather than direct
+membership) don't appear in `/v1/memberships` — if the user names one you
+can't find, ask them for the `<owner>/<teamspace>` pair and get the project id
+from `lightning api "/v1/projects?name=..."` or from them directly.
 
 ## Publish a durable link (the CLI flow)
 
-Two steps: `PUT` the file to the artifacts blob route, then register the object
-as a shared artifact. Both are plain `lightning api` calls. Copy-paste function:
+Three calls: `lightning cp` the file into the `artifacts/` drive, read back
+which storage cluster it landed on, then register the object as a shared
+artifact. Copy-paste function:
 
 ```bash
 # share <local-file> [remote-name] [content-type]
@@ -73,10 +78,14 @@ as a shared artifact. Both are plain `lightning api` calls. Copy-paste function:
 share() {
   local FILE="$1" NAME="${2:-$(basename "$1")}" CT="${3:-$(file -b --mime-type "$1")}"
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
-  # 1. upload the bytes straight to the blob route (clusterId is a query param)
-  lightning api "/v1/projects/$PID/artifacts/blobs/$KEY?clusterId=$CLUSTER" \
-    -X PUT --input "$FILE" || return 1
-  # 2. register it -> durable, no-expiry lightning.ai/artifacts/<id>
+  # 1. upload; cp picks the teamspace's default cloud account and prints which
+  lightning cp "$FILE" "lit://$OWNER/$TSNAME/$KEY" >&2 || return 1
+  # 2. the blob's clusterId from the listing is the storage cluster the
+  #    publish and delete calls need (see Gotchas — it is not always the
+  #    cluster the upload went through)
+  local CLUSTER; CLUSTER=$(lightning api "/v1/projects/$PID/artifacts/trees/$(dirname "$KEY")" \
+    -q ".tree[] | select(.path == \"$(basename "$KEY")\") | .clusterId" | tr -d '"')
+  # 3. register it -> durable, no-expiry lightning.ai/artifacts/<id>
   local LINK; LINK=$(lightning api "/v1/projects/$PID/shared-artifacts" -X POST \
     -f clusterId="$CLUSTER" -f filename="$KEY" -f contentType="$CT" -F private=false -q .url | tr -d '"')
   echo "✅ Published $NAME ($CT)" >&2
@@ -91,8 +100,8 @@ share dashboard.html reports/dash.html text/html   # custom remote name + explic
 When you publish something for the user, always show them the full URL on its
 own line (terminals make it clickable) — never just say "done".
 
-The upload `filename` and the publish `filename` must point at the same object —
-the `KEY` variable keeps them identical. The server confines shares to the
+The upload path and the publish `filename` must point at the same object — the
+`KEY` variable keeps them identical. The server confines shares to the
 `artifacts/` folder; if you pass a bare `filename` (no `artifacts/` prefix) to
 publish it prepends one, but matching the two explicitly is clearest.
 
@@ -115,9 +124,24 @@ right there is what makes HTML/PDF render instead of download.
 | `.json` / `.txt` / `.csv` | `application/json` / `text/plain` / `text/csv` |
 | anything to force-download | `application/octet-stream` |
 
-## See what's published, unpublish, delete
+## List, see what's published, unpublish, delete
 
-**List** every published link in the project (`GET /v1/projects/{pid}/shared-artifacts`,
+**List what's in the drive** — the artifacts tree route serves any folder,
+with `recursive=true` to flatten it. Each blob row carries the `clusterId` the
+delete call needs:
+
+```bash
+# ls [subfolder]  ->  "<clusterId>  <size>  <path>" per file
+ls_artifacts() {
+  lightning api "/v1/projects/$PID/artifacts/trees/artifacts${1:+/$1}?recursive=true" \
+    -q '.tree[] | select(.type == "blob") | [.clusterId, .size, .path] | @tsv'
+}
+```
+
+A response caps at 5000 entries and sets `nextCursor` when there are more —
+re-request with `&cursor=<nextCursor>` to page through a huge folder.
+
+**List every published link** in the project (`GET /v1/projects/{pid}/shared-artifacts`,
 newest first — id, filename, content type, public/private, download count, URL):
 
 ```bash
@@ -128,12 +152,6 @@ shares() {
    id: \(.id)
    🔗 \(.url)"'
 }
-```
-
-```
-🌐 artifacts/report.html  ·  ⬇ 42  ·  2026-07-14T12:39:56Z
-   id: art_01kxgaep54zzs84arfns1j21wd
-   🔗 https://lightning.ai/artifacts/art_01kxgaep54zzs84arfns1j21wd
 ```
 
 **Unpublish** (revoke the link; the file itself stays in the drive):
@@ -149,16 +167,17 @@ unshare art_01kxgaep54zzs84arfns1j21wd
 ```
 
 **Delete the file itself** (after unpublishing, or to clean up an abandoned
-upload). Note the query params inline in the path — see Gotchas:
+upload). `clusterId` is the storage cluster the listing reports for that blob;
+note the query params inline in the path — see Gotchas:
 
 ```bash
-lightning api "/v1/projects/$PID/storage?clusterId=$CLUSTER&filename=artifacts/report.html" -X DELETE
+lightning api "/v1/projects/$PID/storage?clusterId=<from-listing>&filename=artifacts/report.html" -X DELETE
 ```
 
 Re-publish the same object later (new id, new URL) by repeating the publish call
 with the same `filename`. Update the contents behind an existing link by
-re-uploading (step 1 of `share`) to the same `artifacts/<name>` — published ids
-keep serving the new bytes. To change the served Content-Type, publish again.
+re-running `lightning cp` to the same `artifacts/<name>` — published ids keep
+serving the new bytes. To change the served Content-Type, publish again.
 
 ## Example workflows
 
@@ -187,25 +206,24 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
-- **`clusterId` is required** on both calls — a query param on the upload `PUT`,
-  a `-f` field on the register `POST`. Resolve it from `/v1/projects/{pid}/clusters`;
-  one that isn't bound errors with `cluster "…" is not bound to this project`. Omit
-  it and you get `drive: invalid request: project artifacts require a ClusterID`.
-- **Being bound to the project is not enough — the cluster must be `RUNNING`.** Taking
-  `clusters[0]` blindly is a real trap: on a stock account the first entry is
-  `lightning-vultr-prod` with `status.phase: CLUSTER_STATE_PENDING` (and every region
-  `REGION_STATE_FAILED`), while the other eight are `CLUSTER_STATE_RUNNING`. The upload
-  `PUT` then fails on a drive error that says nothing about cluster health. Always
-  filter on `.status.phase == "CLUSTER_STATE_RUNNING"`.
-- **There is no way to list what is already in `artifacts/`.**
-  `GET /v1/projects/{pid}/storage?prefix=artifacts/` returns `HTTP 501 Not Implemented`
-  (`{"code": 12, "message": "Method Not Allowed"}`) even though `DELETE` on the same
-  path works. Track what you uploaded yourself; you cannot enumerate it afterwards.
+- **Publish and delete want the blob's *storage* cluster, not the cluster the
+  upload went through.** A teamspace can be bound to compute clusters that
+  store their files under a parent cluster's bucket; publishing with such a
+  compute cluster's id fails with HTTP 500, and deleting with it silently
+  removes nothing. The artifacts tree listing reports each blob's real
+  `clusterId` — always read it from there (the `share` function does).
+- **`lightning cp` needs no cluster flag** — it resolves the teamspace's
+  default cloud account and prints which it chose. Pass
+  `--cloud-account <id>` only to steer placement deliberately, and pick a
+  cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
+  (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the
+  upload fail with a drive error that says nothing about cluster health.
 - **Delete and unpublish both report success for things that don't exist.** The storage
   `DELETE` returns a bare `{}` whether or not it removed anything, and
   `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}` for an
   id that was already revoked or simply mistyped. Do not treat exit code 0 as proof;
-  verify by re-fetching the public URL and checking it 404s.
+  verify with the tree listing (for the file) or by checking the public URL 404s
+  (for the link).
 - **The served HTML is not byte-identical to what you uploaded.** Cloudflare injects a
   Browser-Insights RUM beacon (`static.cloudflareinsights.com/beacon.min.js`) into HTML
   responses — a ~350-byte delta. Harmless for viewing, but don't promise a
@@ -214,10 +232,10 @@ URL=$(share model-metrics.json)
   ignores — it wants query params. Inline them in the path:
   `"/v1/projects/$PID/storage?clusterId=…&filename=…"`.
 - **Shares are confined to the `artifacts/` folder.** Publish only finds objects
-  under `projects/{pid}/artifacts/...`, so the upload `path` must start with
-  `artifacts/`. Files under `Uploads/` or the `lightning_storage` Drive are a
-  different backend and won't be found — `lightning cp` targets those, so it is
-  **not** the upload to use here.
+  under `projects/{pid}/artifacts/...`, so the upload must target
+  `lit://<owner>/<teamspace>/artifacts/...`. Files under `uploads/` or
+  `lightning_storage/` are reachable with `lightning cp` too, but publish
+  won't find them there.
 - **Content-Type is set at publish time**, not upload time — the serving handler
   uses the shared-artifact record's `contentType`, overriding the stored object.
   Set it on the publish call so HTML/PDF render inline.
