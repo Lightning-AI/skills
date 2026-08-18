@@ -15,6 +15,10 @@ lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```
 
+If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
+CLI is running — refresh with `uvx --refresh lightning-sdk` (or
+`pip install -U lightning-sdk` for a persistent install).
+
 Python snippets: `uv run --with lightning-sdk python script.py`.
 
 ## Resolving org and teamspace (do this first)

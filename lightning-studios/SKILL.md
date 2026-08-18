@@ -16,6 +16,10 @@ lightning login                     # browser flow; or set env vars for headless
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required (Basic auth is user_id:api_key)
 ```
 
+If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
+CLI is running — refresh with `uvx --refresh lightning-sdk` (or
+`pip install -U lightning-sdk` for a persistent install).
+
 Credentials are stored in `~/.lightning/credentials.json`. Python snippets can run via `uv run --with lightning-sdk python script.py`.
 
 ## Resolving org and teamspace (do this first)

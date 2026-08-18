@@ -31,6 +31,10 @@ extra auth steps. Get a key from lightning.ai → user/org settings, or
 key** — read it from the environment. To target a non-prod control plane, set
 `LIGHTNING_CLOUD_URL` (default `https://lightning.ai`).
 
+If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
+CLI is running — refresh with `uvx --refresh lightning-sdk` (or
+`pip install -U lightning-sdk` for a persistent install).
+
 `lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
 typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
 to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
