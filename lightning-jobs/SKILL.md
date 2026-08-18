@@ -15,6 +15,10 @@ lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```
 
+If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
+CLI is running — refresh with `uvx --refresh lightning-sdk` (or
+`pip install -U lightning-sdk` for a persistent install).
+
 Python snippets: `uv run --with lightning-sdk python script.py`.
 
 ## Resolving org and teamspace (do this first)
@@ -156,6 +160,20 @@ Read the results back **from the source Studio**, under
   in the Studio's home after the run — they surface only under
   `/teamspace/jobs/<name>/artifacts` (read-only) from the source Studio once the job
   is terminal.
+
+**Fetch artifacts from anywhere** — the capture also surfaces in the teamspace
+Drive under `jobs/<job-name>/`, so reading it does not require a Studio:
+
+```bash
+lightning cp lit://<owner>/<teamspace>/jobs/<job-name>/model.joblib ./model.joblib   # one file
+lightning cp -r lit://<owner>/<teamspace>/jobs/<job-name>/outputs/ ./outputs         # a folder
+```
+
+The capture can hold much more than the files you wrote — up to the job's whole
+home — so copy the specific files or subfolder rather than the whole
+`jobs/<job-name>/` tree. See what's there first with
+`lightning ls -r lit://<owner>/<teamspace>/jobs/<job-name>`.
+Deleting the job deletes this tree with it.
 
 Image (docker) jobs have no home-artifact collection — mount an output location with
 `path_mappings` (see the table above). As an explicit escape hatch from any job you can

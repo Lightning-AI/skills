@@ -16,6 +16,10 @@ lightning login                     # browser flow; or set env vars for headless
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required (Basic auth is user_id:api_key)
 ```
 
+If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
+CLI is running — refresh with `uvx --refresh lightning-sdk` (or
+`pip install -U lightning-sdk` for a persistent install).
+
 Credentials are stored in `~/.lightning/credentials.json`. Python snippets can run via `uv run --with lightning-sdk python script.py`.
 
 ## Resolving org and teamspace (do this first)
@@ -74,8 +78,8 @@ Studio paths use `lit://<owner>/<teamspace>/studios/<studio-name>/<path>`. Exact
 ```bash
 lightning cp ./train.py lit://owner/teamspace/studios/my-studio/train.py     # upload
 lightning cp -r lit://owner/teamspace/studios/my-studio/logs/ ./logs         # download dir
-lightning studio ls lit://owner/teamspace/studios/my-studio/                 # list files
-lightning studio rm lit://owner/teamspace/studios/my-studio/old.txt [-r] [-f]
+lightning ls lit://owner/teamspace/studios/my-studio                         # list files (-r recursive, --json)
+lightning rm lit://owner/teamspace/studios/my-studio/old.txt [-r] [-f]
 ```
 
 ## Python SDK
@@ -172,5 +176,4 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
 - **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because a `-F` field turns the GET into a spec'd request. Call it bare and slice with `-q`.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
-- `lightning cp lit://.../file.txt file.txt` (bare local filename as destination) fails with `FileNotFoundError: [Errno 2] ... ''` — write the destination as `./file.txt` or a directory path.
 - In Python, `teamspace=` takes the bare teamspace name with `org=`/`user=` separate; `"owner/name"` combined strings only work in CLI `--teamspace` flags.
