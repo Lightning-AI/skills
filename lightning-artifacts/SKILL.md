@@ -13,9 +13,9 @@ presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
 **This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`):
-`lightning cp` uploads the file, and `lightning api` — a `gh api`-style raw
-HTTP client — makes the two REST calls around it. No Python, no SDK code, not
-even a `curl`.
+`lightning cp` / `ls` / `rm` handle the files, and `lightning api` — a
+`gh api`-style raw HTTP client — makes the two publish calls around them. No
+Python, no SDK code, not even a `curl`.
 
 ## Setup & auth
 
@@ -83,8 +83,7 @@ share() {
   # 2. the blob's clusterId from the listing is the storage cluster the
   #    publish call needs (see Gotchas — it is not always the cluster the
   #    upload went through)
-  local CLUSTER; CLUSTER=$(lightning api "/v1/projects/$PID/artifacts/trees/$(dirname "$KEY")" \
-    -q ".tree[] | select(.path == \"$(basename "$KEY")\") | .clusterId" | tr -d '"')
+  local CLUSTER; CLUSTER=$(lightning ls --json "lit://$OWNER/$TSNAME/$KEY" | jq -r '.[0].clusterId')
   # 3. register it -> durable, no-expiry lightning.ai/artifacts/<id>
   local LINK; LINK=$(lightning api "/v1/projects/$PID/shared-artifacts" -X POST \
     -f clusterId="$CLUSTER" -f filename="$KEY" -f contentType="$CT" -F private=false -q .url | tr -d '"')
@@ -126,20 +125,16 @@ right there is what makes HTML/PDF render instead of download.
 
 ## List, see what's published, unpublish, delete
 
-**List what's in the drive** — the artifacts tree route serves any folder,
-with `recursive=true` to flatten it. Each blob row carries the `clusterId` the
-publish call needs:
+**List what's in the drive** with `lightning ls` — one level by default,
+`-r` for every file underneath, `--json` for entries with `size` and the
+`clusterId` the publish call needs. Listings follow the server's pages
+automatically, so folders with many thousands of files come back complete:
 
 ```bash
-# ls [subfolder]  ->  "<clusterId>  <size>  <path>" per file
-ls_artifacts() {
-  lightning api "/v1/projects/$PID/artifacts/trees/artifacts${1:+/$1}?recursive=true" \
-    -q '.tree[] | select(.type == "blob") | [.clusterId, .size, .path] | @tsv'
-}
+lightning ls "lit://$OWNER/$TSNAME/artifacts/"              # one level; folders end in /
+lightning ls -r "lit://$OWNER/$TSNAME/artifacts/reports"    # full relative file paths
+lightning ls --json "lit://$OWNER/$TSNAME/artifacts/reports"
 ```
-
-A response caps at 5000 entries and sets `nextCursor` when there are more —
-re-request with `&cursor=<nextCursor>` to page through a huge folder.
 
 **List every published link** in the project (`GET /v1/projects/{pid}/shared-artifacts`,
 newest first — id, filename, content type, public/private, download count, URL):
@@ -167,13 +162,15 @@ unshare art_01kxgaep54zzs84arfns1j21wd
 ```
 
 **Delete the file itself** (after unpublishing, or to clean up an abandoned
-upload) — no cluster id needed; the server removes it wherever it is stored.
-A folder and everything under it deletes the same way via `trees/`:
+upload) — no cluster id needed; the server removes it wherever it is stored:
 
 ```bash
-lightning api "/v1/projects/$PID/artifacts/blobs/artifacts/report.html" -X DELETE
-lightning api "/v1/projects/$PID/artifacts/trees/artifacts/reports" -X DELETE
+lightning rm "lit://$OWNER/$TSNAME/artifacts/report.html"
+lightning rm -r "lit://$OWNER/$TSNAME/artifacts/reports"     # a folder and everything under it
 ```
+
+`rm` fails on a path that doesn't exist (pass `-f` to ignore) and refuses a
+folder without `-r`.
 
 Re-publish the same object later (new id, new URL) by repeating the publish call
 with the same `filename`. Update the contents behind an existing link by
@@ -219,12 +216,11 @@ URL=$(share model-metrics.json)
   cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
   (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the
   upload fail with a drive error that says nothing about cluster health.
-- **Delete and unpublish both report success for things that don't exist.** The
-  file/folder `DELETE` succeeds whether or not it removed anything, and
+- **Unpublish reports success for links that don't exist.**
   `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}` for an
-  id that was already revoked or simply mistyped. Do not treat exit code 0 as proof;
-  verify with the tree listing (for the file) or by checking the public URL 404s
-  (for the link).
+  id that was already revoked or simply mistyped — do not treat exit code 0 as
+  proof; verify by checking the public URL 404s. (`lightning rm`, by contrast,
+  fails on a missing path unless you pass `-f`.)
 - **The served HTML is not byte-identical to what you uploaded.** Cloudflare injects a
   Browser-Insights RUM beacon (`static.cloudflareinsights.com/beacon.min.js`) into HTML
   responses — a ~350-byte delta. Harmless for viewing, but don't promise a
@@ -239,8 +235,8 @@ URL=$(share model-metrics.json)
   Set it on the publish call so HTML/PDF render inline.
 - The public link is genuinely open — anyone with it can fetch the file with no
   auth. Use `-F private=true` for anything you don't want world-readable.
-- `-q` (jq filtering) needs the `jq` binary installed; without it, drop `-q` and
-  parse the JSON yourself.
+- `-q` (jq filtering) and the `share`/`shares` helpers need the `jq` binary
+  installed; without it, parse the JSON yourself.
 - **The list endpoint is newer than the rest.** `GET
   /v1/projects/{pid}/shared-artifacts` returns HTTP 501 "Method Not Allowed" on
   control planes built before mid-July 2026 — publish/unpublish still work

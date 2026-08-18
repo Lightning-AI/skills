@@ -167,8 +167,8 @@ lightning cp -r lit://<owner>/<teamspace>/jobs/<job-name>/outputs/ ./outputs    
 
 The capture can hold much more than the files you wrote — up to the job's whole
 home — so copy the specific files or subfolder rather than the whole
-`jobs/<job-name>/` tree. To see what's there first:
-`lightning api "/v1/projects/<pid>/artifacts/trees/jobs/<job-name>?recursive=true"`.
+`jobs/<job-name>/` tree. See what's there first with
+`lightning ls -r lit://<owner>/<teamspace>/jobs/<job-name>`.
 Deleting the job deletes this tree with it.
 
 Image (docker) jobs have no home-artifact collection — mount an output location with

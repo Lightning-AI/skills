@@ -74,8 +74,8 @@ Studio paths use `lit://<owner>/<teamspace>/studios/<studio-name>/<path>`. Exact
 ```bash
 lightning cp ./train.py lit://owner/teamspace/studios/my-studio/train.py     # upload
 lightning cp -r lit://owner/teamspace/studios/my-studio/logs/ ./logs         # download dir
-lightning studio ls lit://owner/teamspace/studios/my-studio/                 # list files
-lightning studio rm lit://owner/teamspace/studios/my-studio/old.txt [-r] [-f]
+lightning ls lit://owner/teamspace/studios/my-studio                         # list files (-r recursive, --json)
+lightning rm lit://owner/teamspace/studios/my-studio/old.txt [-r] [-f]
 ```
 
 ## Python SDK
