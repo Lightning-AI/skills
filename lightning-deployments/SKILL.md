@@ -63,9 +63,10 @@ lightning deployment create ... \
   -e KEY=VALUE --secret MY_LIGHTNING_SECRET --interruptible   # CHECK THE SPOT PRICE FIRST — see Gotchas
 
 # endpoint auth — mutually exclusive; OMITTING ALL THREE MAKES THE ENDPOINT PUBLIC
-  --api-key-auth                    # require a Lightning API key (Bearer)
+# Run `lightning auth whoami` first: --api-key-auth only accepts *user* keys.
+  --api-key-auth                    # require a Lightning USER API key (Bearer) — see Gotchas
   --basic-auth USER:PASS
-  --token-auth TOKEN
+  --token-auth TOKEN                # any bearer string you choose; use this from a scoped key
 
 # operate
 lightning deployment list --teamspace owner/teamspace [--all] [--sort-by state]
@@ -158,9 +159,12 @@ Prompts this skill handles: *"deploy this docker image behind an API"*, *"serve 
 **Deploy a container, verify it responds, then clean up:**
 
 ```bash
+lightning auth whoami    # `user` → --api-key-auth is callable by you; `scoped-api-key` → use --token-auth
 lightning deployment create hello-api --teamspace my-org/my-teamspace \
   --image nginx:latest --machine CPU --port 80 --min-replicas 0 --max-replicas 1 --api-key-auth
 lightning deployment inspect hello-api --teamspace my-org/my-teamspace   # JSON: status, endpoint URL
+URL=<endpoint URL from the inspect output above>
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $LIGHTNING_API_KEY" "$URL/"   # verify the ENDPOINT, not the Studio
 ```
 ```python
 from lightning_sdk import Deployment
@@ -202,7 +206,9 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 
 ## Gotchas
 
-- Omitting all auth flags creates a **publicly reachable endpoint** — confirm that's intended; default to `--api-key-auth` otherwise.
+- Omitting all auth flags creates a **publicly reachable endpoint** — confirm that's intended.
+- **Check `lightning auth whoami` before picking an auth flag.** `--api-key-auth` gates the endpoint on a Lightning *user* key (it serializes to `userApiKey: true`), so an `Auth type: scoped-api-key` caller gets **401 on every request** to an endpoint that is otherwise healthy — replicas running, seconds billed. Use `--token-auth <token>` when a scoped key, CI job or agent is what will call the endpoint; `--api-key-auth` when humans with their own Lightning logins will. Verified against a control: a second, pre-existing healthy deployment returned an identical 401 to the same scoped key.
+- **Verify a deployment against its public URL from `deployment inspect` — never against the app running inside the source Studio.** The Studio proves the image; only the endpoint proves the service. A deployment can show a healthy replica and bill normally while 401-ing every request.
 - **`--interruptible` is not reliably cheaper — check the price before you pass it.** On GCP the L4 is **$0.48/hr on-demand but $0.727/hr spot**: interruptible costs 51% *more* and you take preemption risk for the privilege. Nothing warns you at create time. Fetch both rates from the accelerator catalog first (see the `lightning-cost-estimation` skill) and take `min(cost, spotPrice)`; spot is only reliably cheaper on some SKUs and clouds.
 - `min_replicas=0` enables scale-to-zero and **genuinely stops billing at zero** — a teamspace credit balance stays flat while a deployment sits at zero replicas. The next request is served transparently: the edge accepts the connection and *holds it open* until a replica is ready (~6 minutes on a GPU image) and then returns a normal 200 — it does not return 503 or refuse, so any client without a short timeout just waits. `min_replicas >= 1` bills continuously — flag this cost to the user.
 - **The idle window before scale-to-zero is SDK-only.** `AutoScaleConfig(idle_threshold_seconds=...)` has no equivalent flag on `deployment create` or `deployment update`, so from the CLI you get the default and cannot tune how long a replica lingers.
