@@ -6,8 +6,10 @@ description: Estimate and compare what a workload costs on Lightning AI - fetch 
 # Lightning AI cost estimation
 
 Every machine price on [lightning.ai/pricing](https://lightning.ai/pricing) comes from one
-public endpoint. **Always fetch live prices — never quote from memory or from the snapshot
-table at the bottom of this file.** Prices, spot rates and capacity change.
+public endpoint. **Always fetch live prices, and fetch the SKU slugs too — never quote either
+from memory.** Prices, spot rates, capacity *and slugs* change. This file deliberately carries no
+price snapshot: one went stale and cost a real run 59 minutes — see **From a quote to a
+launch** below.
 
 **1 Lightning credit = $1 USD.** Machines bill **per second** while allocated; storage bills
 daily. Docs: [billing FAQ](https://lightning.ai/docs/platform/overview/faq/billing.md) ·
@@ -96,11 +98,25 @@ The `--machine` / `Machine.<NAME>` values used by `lightning-jobs`, `lightning-s
 | `CPU_SMALL` | `cpu-2` | | `A100_40GB_X_8` | `lit-a100-40gb-8` |
 | `CPU` | `cpu-4` | | `A100_80GB_X_8` | `lit-a100-80gb-8` |
 | `CPU_X_8` / `CPU_X_16` | `cpu-8` / `cpu-16` | | `H100` … `H100_X_8` | `lit-h100-80gb-1` … `-8` |
-| `DATA_PREP` | `data-prep-mid` | | `H200` / `H200_X_8` | `lit-h200x-1` / `lit-h200x-8` |
+| `DATA_PREP` | `data-prep-mid` | | `H200` / `H200_X_8` | **varies by cloud — look it up** |
 | `T4` / `L4` / `L40S` (`_X_N`) | `lit-t4-N` / `lit-l4-N` / `lit-l40s-N` | | `B200_X_8` | `lit-b200x-8` |
 
 Add `--cloud <cluster-id>` (e.g. `--cloud lightning-baremetal`) to pin the cloud you priced;
 without it the job lands on the teamspace default and may bill a different rate.
+
+**The same `--machine` value maps to different slugs on different clouds, so never hardcode one.**
+H200 is `lit-h200x-1` on Nebius but `lit-h200-141gb-1` on Lightning Cloud. Resolve it live:
+
+```bash
+# every SKU on Lightning Cloud whose name mentions the accelerator you want
+curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=MACHINE" \
+| jq -r '.accelerator[] | select((.name + .slugMultiCloud) | test("h200"; "i"))
+         | [.slugMultiCloud, .name, .cost, .availableInSeconds] | @tsv'
+```
+
+Match on the accelerator *name* as well as the slug. Filtering on a slug you assumed makes a
+machine that exists look unavailable — which is exactly how a run ended up queued 59 minutes for
+an H100 while an idle H200 sat in the same pool at the same price.
 
 ## Price lookup recipes
 
@@ -330,34 +346,6 @@ lightning job inspect <job-name> --teamspace <owner>/<teamspace>
 in the Python SDK: `Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant,
 so prices must come from the REST catalog above.
 
-## Snapshot (fetched 2026-07-30 — sanity check only, re-fetch before quoting)
-
-USD/hour, on-demand, per instance. `*` = out of capacity, `†` = GCP DWS-only.
-
-| SKU (`slugMultiCloud`) | GPUs | MACHINE | AWS | GCP | LAMBDA_LABS | NEBIUS | VOLTAGE_PARK |
-|---|---|---|---|---|---|---|---|
-| `lit-t4-1` | 1 | — | 0.98 | 0.43 | — | — | — |
-| `lit-l4-1` | 1 | — | 1.58 | 0.48 | — | — | — |
-| `lit-l4-8` | 8 | — | 15.03 | 10.04 | — | — | — |
-| `lit-l40s-1` | 1 | — | 2.89 | — | — | 2.14 | — |
-| `lit-l40s-8` | 8 | — | 37.89 | — | — | — | — |
-| `lit-rtx-6000-pro-1` | 1 | — | 4.64 | 5.39 | — | — | — |
-| `lit-rtx-6000-pro-8` | 8 | — | 37.03 | 42.18 | — | — | — |
-| `lit-a100-40gb-8` | 8 | — | 27.67 | — | 12.38 | — | — |
-| `lit-a100-80gb-1` | 1 | — | — | 5.68 | — | — | — |
-| `lit-a100-80gb-8` | 8 | — | — | 45.10 | 24.55 | — | — |
-| `lit-h100-80gb-1` | 1 | **4.50** | — | 12.34 | 4.68 | 5.68 | 1.99\* |
-| `lit-h100-80gb-8` | 8 | **36.00** | 64.96 | 98.37 | 37.44\* | 45.47 | 15.92\* |
-| `lit-h200x-1` | 1 | — | — | — | — | 6.53 | — |
-| `lit-h200x-8` | 8 | — | 70.53 | 47.16† | — | 52.23 | — |
-| `lit-b200x-1` | 1 | — | — | — | — | 9.86 | — |
-| `lit-b200x-8` | 8 | — | — | 100.29† | 58.87\* | 78.87 | — |
-| `lit-tpu-v6e-8` | 8 | — | — | 24.20 | — | — | — |
-
-CPU (per hour): `cpu-2` $0.18–0.29 · `cpu-4` $0.33–0.44 · `cpu-8` $0.51–0.68 · `cpu-16`
-$0.99–1.25. Data-prep (big-disk): `data-prep-mid` $1.48–3.21 · `data-prep-max-large`
-$2.69–6.23 · `data-prep-ultra-extra-large` $4.79–9.25.
-
 ## Gotchas
 
 - **`Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant.** `.slug` is
@@ -379,12 +367,13 @@ $2.69–6.23 · `data-prep-ultra-extra-large` $4.79–9.25.
   ($4.50/GPU-hr). Quoting it as per-GPU inflates an estimate 8×.
 - **`spotPrice: 0` means "no spot on this provider"** (Lambda, Nebius, Voltage Park all report
   0), not "free". Only use `spotPrice` when it is `> 0`.
-- **Spot is not always cheaper than on-demand.** GCP `lit-h200x-8` is $47.16 on-demand vs
+- **Spot is not always cheaper than on-demand.** Figures below are illustrations of the
+  pattern, not current rates. GCP `lit-h200x-8` was $47.16 on-demand vs
   $52.74 spot; AWS `lit-l40s-1` $2.89 vs $3.02; GCP `lit-l4-1` $0.48 vs $0.71. Take
   `min(cost, spotPrice)` and say which one you quoted.
 - **Unknown `cloudProvider` values silently return the AWS catalog.** `AZURE`, `KUBERNETES` and
   `TENSORDOCK` all echo AWS's 23 SKUs byte-for-byte — they are not real Azure prices. Only the
-  seven providers in the table above are meaningful; anything else 400s or lies.
+  seven providers in the Cloud providers table are meaningful; anything else 400s or lies.
 - **Never price from `cloudProvider=LIGHTNING` or `DGX`.** They return a single internal cluster
   entry with placeholder costs of `1` and `2`. The Lightning Cloud catalog is `MACHINE`.
 - **The SDK's `CloudProvider` enum says `LIGHTNING`, the pricing API says `MACHINE`** — same
