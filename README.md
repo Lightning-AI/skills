@@ -18,7 +18,20 @@ All skills are built around the [`lightning-sdk`](https://pypi.org/project/light
 
 ## Install
 
-The easiest way is the [skills.sh](https://skills.sh) CLI, which installs into Claude Code, Cursor, Codex, and [many other agents](https://skills.sh):
+### Claude Code plugin
+
+This repo is also a [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so Claude Code can install all seven skills as one plugin and keep them updated:
+
+```bash
+/plugin marketplace add Lightning-AI/skills
+/plugin install lightning@lightning-ai
+```
+
+Plugin skills are namespaced, so they appear as `/lightning:lightning-jobs`, `/lightning:lightning-studios`, and so on. They still fire on their own when a task calls for them.
+
+### skills.sh (Claude Code, Cursor, Codex and others)
+
+The [skills.sh](https://skills.sh) CLI installs into Claude Code, Cursor, Codex, and [many other agents](https://skills.sh):
 
 ```bash
 # interactive: pick skills and target agents
@@ -34,7 +47,9 @@ npx skills add Lightning-AI/skills -s lightning-sandboxes
 npx skills add Lightning-AI/skills -g
 ```
 
-Or copy the skill folders manually into your agent's skills directory:
+### Manual copy
+
+Or copy the skill folders straight into your agent's skills directory:
 
 ```bash
 # Claude Code (project-level)

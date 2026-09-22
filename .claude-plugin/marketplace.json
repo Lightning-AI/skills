@@ -1,0 +1,15 @@
+{
+  "name": "lightning-ai",
+  "description": "Agent skills that teach coding agents how to drive the Lightning AI platform.",
+  "owner": {
+    "name": "Lightning AI",
+    "url": "https://lightning.ai"
+  },
+  "plugins": [
+    {
+      "name": "lightning",
+      "source": ".",
+      "description": "Drive Lightning AI from your agent: cloud GPU Studios, batch and multi-machine jobs, autoscaled deployments, ephemeral sandboxes, the LLM gateway, durable artifact links, and live cost estimates."
+    }
+  ]
+}
