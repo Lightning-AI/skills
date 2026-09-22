@@ -10,8 +10,7 @@ A Deployment runs a container (or an auto-built vLLM server for a HuggingFace mo
 ## Setup & auth
 
 ```bash
-lightning --version                 # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
 lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```

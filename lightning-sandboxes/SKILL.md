@@ -10,8 +10,8 @@ A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default
 ## Setup & auth (sandbox-specific)
 
 ```bash
-lightning --version            # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version    # CLI; `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
+# `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
 ```
 
 **Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Sandboxes need an **org- or teamspace-scoped API key** in `LIGHTNING_SANDBOX_API_KEY`; a personal `lightning login` credential fails with *"Use a teamspace- or org-scoped API key (Members → API keys), not your personal login key."*

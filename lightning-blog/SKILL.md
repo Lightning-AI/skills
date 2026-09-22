@@ -27,8 +27,7 @@ Creating a blog post creates its lit page automatically. The public URL is
 ## Setup & auth
 
 ```bash
-lightning --version                   # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version           # the CLI; no install needed (uvx runs it ad-hoc)
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
 lightning login                        # browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # non-interactive (CI, agents)
 ```

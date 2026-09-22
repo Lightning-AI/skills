@@ -10,8 +10,7 @@ A Job runs a command on a dedicated cloud machine and terminates when done. Two 
 ## Setup & auth
 
 ```bash
-lightning --version                 # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
 lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```
@@ -196,12 +195,13 @@ but for studio jobs writing to home is the intended path.
 
 `CPU_SMALL`, `CPU`, `CPU_X_2/4/8/16`, `DATA_PREP(_MAX/_ULTRA)`, `T4(_X_2/4/8)`, `L4(_X_2/4/8)`, `L40S(_X_2/4/8)`, `RTXP_6000(_X_2/4/8)`, `A100(_X_2/4/8)`, `H100(_X_2/4/8)`, `H200(_X_8)`, `B200_X_8`. Multi-GPU `_X_N` variants bill N GPUs; MMT bills per machine × `num_machines`.
 
-**This list is the complete set — never probe the API for machine names.** For per-hour prices or
-cloud-specific SKU slugs, the live catalog is
-`GET /v1/core/accelerators?cloudProvider=<MACHINE|AWS|GCP|LAMBDA_LABS|NEBIUS|VOLTAGE_PARK|VULTR>`
-(no auth needed, so plain `curl` works). `/v1/accelerators`, `/v1/accelerator-catalog`,
-`/v1/pricing` and `/v1/compute/accelerators` do **not** exist — they all return `code: 5`. Costing
-recipes live in the `lightning-cost-estimation` skill.
+The names above are current as of writing and SKUs do get added, so treat the list as a starting
+point, not a closed set. To see what a teamspace can actually launch, list them with
+`lightning machine list` rather than inventing a catalog endpoint — `/v1/accelerators`,
+`/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all return `code: 5`. For
+per-hour prices and cloud-specific SKU slugs the live source is
+`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works); the
+`lightning-cost-estimation` skill has the provider values and the costing recipes.
 
 ## Example workflows
 

@@ -20,8 +20,7 @@ Python, no SDK code, not even a `curl`.
 ## Setup & auth
 
 ```bash
-lightning --version                  # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version          # the CLI; no install needed (uvx runs it ad-hoc)
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
 lightning login                       # interactive browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=...    # non-interactive alternative (CI, agents)
 ```

@@ -10,8 +10,8 @@ The LLM gateway gives one API + one bill for models from multiple providers. Mod
 ## Setup & auth
 
 ```bash
-lightning --version         # already installed? prefer it — a project venv often has it
-pip install lightning-sdk   # or uv run --with lightning-sdk python script.py
+lightning --version || pip install lightning-sdk   # an installed SDK wins; else install it
+# Python snippets can also run via: uv run --with lightning-sdk python script.py
 lightning login             # or headless: export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...
 ```
 

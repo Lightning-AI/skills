@@ -27,8 +27,7 @@ curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=MACHINE" | jq '
 The same call through the CLI (query string goes in the path, quoted):
 
 ```bash
-lightning --version                                          # already installed? prefer it — a project venv often has it
-uvx lightning-sdk --version                                  # `lightning` == `lightning-sdk`
+lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
 lightning api "/v1/core/accelerators?cloudProvider=MACHINE"
 ```
 
