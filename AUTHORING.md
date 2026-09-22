@@ -108,13 +108,19 @@ Tips:
 
 **Add:** create `lightning-<area>/SKILL.md`, write and test it, then add a row to
 the table in `README.md`. If it introduces a new capability worth calling out,
-mention it in the README intro too.
+mention it in the README intro too. Public skills also need their directory added
+to the `skills` array in `.claude-plugin/plugin.json`, or the Claude Code plugin
+won't ship them — the array is explicit precisely so internal skills
+(`lightning-blog`) stay out of it.
 
 **Update:** edit the `SKILL.md`. Re-run the affected commands against a control
 plane before committing — the API may have changed under you. Keep the README row
 in sync if the scope changed.
 
-**Remove:** delete the directory and its `README.md` row.
+**Remove:** delete the directory, its `README.md` row, and its entry in the
+`skills` array in `.claude-plugin/plugin.json`. A path left behind in that array
+fails `claude plugin validate` and the runtime reports it as a load failure, so
+run `claude plugin validate . --strict` before you push.
 
 Keep changes scoped to one skill per PR where you can; it makes review and
 `npx skills add` selection cleaner.
@@ -123,7 +129,7 @@ Keep changes scoped to one skill per PR where you can; it makes review and
 
 ```bash
 git checkout -b <area>-skill
-git add lightning-<area>/SKILL.md README.md
+git add lightning-<area>/SKILL.md README.md .claude-plugin/plugin.json
 git commit -m "Add lightning-<area> skill (live-verified against <control plane>)"
 git push -u origin HEAD
 gh pr create --fill
@@ -139,4 +145,13 @@ tells a reviewer the skill actually works.
 npx skills add Lightning-AI/skills -s lightning-<area>   # via skills.sh
 # or copy the folder into your agent's skills dir:
 cp -r lightning-<area> ~/.claude/skills/
+```
+
+To try the whole set the way a plugin user gets it, load the repo as a plugin and
+check the inventory:
+
+```bash
+claude plugin validate . --strict                  # manifests are well-formed
+claude --plugin-dir . plugin details lightning     # skills discovered + token cost
+claude --plugin-dir .                              # then /lightning:lightning-<area>
 ```

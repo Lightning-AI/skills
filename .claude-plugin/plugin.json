@@ -1,0 +1,30 @@
+{
+  "name": "lightning",
+  "displayName": "Lightning AI",
+  "version": "1.0.0",
+  "description": "Agent skills for the Lightning AI platform: GPU Studios, batch jobs, deployments, sandboxes, the LLM gateway, shareable artifact links, and up-front cost estimates.",
+  "author": {
+    "name": "Lightning AI",
+    "url": "https://lightning.ai"
+  },
+  "homepage": "https://github.com/Lightning-AI/skills",
+  "repository": "https://github.com/Lightning-AI/skills",
+  "keywords": [
+    "lightning-ai",
+    "gpu",
+    "training",
+    "deployment",
+    "sandbox",
+    "llm",
+    "cost-estimation"
+  ],
+  "skills": [
+    "./lightning-studios",
+    "./lightning-jobs",
+    "./lightning-deployments",
+    "./lightning-sandboxes",
+    "./lightning-llm-gateway",
+    "./lightning-artifacts",
+    "./lightning-cost-estimation"
+  ]
+}
