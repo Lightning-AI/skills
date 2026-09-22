@@ -52,12 +52,13 @@ npx skills add Lightning-AI/skills -g
 Or copy the skill folders straight into your agent's skills directory:
 
 ```bash
+SKILLS="lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway lightning-artifacts lightning-cost-estimation"
+
 # Claude Code (project-level)
-mkdir -p .claude/skills
-cp -r lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway .claude/skills/
+mkdir -p .claude/skills && cp -r $SKILLS .claude/skills/
 
 # Claude Code (user-level)
-cp -r lightning-* ~/.claude/skills/
+cp -r $SKILLS ~/.claude/skills/
 ```
 
 ## Prerequisites

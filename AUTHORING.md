@@ -117,7 +117,10 @@ won't ship them — the array is explicit precisely so internal skills
 plane before committing — the API may have changed under you. Keep the README row
 in sync if the scope changed.
 
-**Remove:** delete the directory and its `README.md` row.
+**Remove:** delete the directory, its `README.md` row, and its entry in the
+`skills` array in `.claude-plugin/plugin.json`. A path left behind in that array
+fails `claude plugin validate` and the runtime reports it as a load failure, so
+run `claude plugin validate . --strict` before you push.
 
 Keep changes scoped to one skill per PR where you can; it makes review and
 `npx skills add` selection cleaner.
@@ -126,7 +129,7 @@ Keep changes scoped to one skill per PR where you can; it makes review and
 
 ```bash
 git checkout -b <area>-skill
-git add lightning-<area>/SKILL.md README.md
+git add lightning-<area>/SKILL.md README.md .claude-plugin/plugin.json
 git commit -m "Add lightning-<area> skill (live-verified against <control plane>)"
 git push -u origin HEAD
 gh pr create --fill
