@@ -27,6 +27,7 @@ Creating a blog post creates its lit page automatically. The public URL is
 ## Setup & auth
 
 ```bash
+lightning --version                   # already installed? prefer it — a project venv often has it
 uvx lightning-sdk --version           # the CLI; no install needed (uvx runs it ad-hoc)
 lightning login                        # browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # non-interactive (CI, agents)
@@ -59,6 +60,17 @@ orphan draft. The flag is granted by the platform team.
 
 No org/teamspace resolution is needed — blog posts are global, not
 project-scoped.
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## What each control in the blog editor maps to
 

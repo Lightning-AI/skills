@@ -20,6 +20,7 @@ Python, no SDK code, not even a `curl`.
 ## Setup & auth
 
 ```bash
+lightning --version                  # already installed? prefer it — a project venv often has it
 uvx lightning-sdk --version          # the CLI; no install needed (uvx runs it ad-hoc)
 lightning login                       # interactive browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=...    # non-interactive alternative (CI, agents)
@@ -40,6 +41,17 @@ typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
 to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
 response headers. Fields are JSON body for POST/PUT-with-body and **query
 params** when the request also has `--input` or is a GET.
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## Resolve the teamspace (do this first)
 

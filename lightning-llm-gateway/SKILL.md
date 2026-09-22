@@ -10,6 +10,7 @@ The LLM gateway gives one API + one bill for models from multiple providers. Mod
 ## Setup & auth
 
 ```bash
+lightning --version         # already installed? prefer it — a project venv often has it
 pip install lightning-sdk   # or uv run --with lightning-sdk python script.py
 lightning login             # or headless: export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...
 ```
@@ -19,6 +20,17 @@ Inference is **billed to a teamspace** — the `LLM` class refuses to run withou
 ```bash
 lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name] | @tsv'
 ```
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## Python SDK
 

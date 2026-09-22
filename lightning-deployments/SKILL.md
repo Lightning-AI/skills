@@ -10,12 +10,24 @@ A Deployment runs a container (or an auto-built vLLM server for a HuggingFace mo
 ## Setup & auth
 
 ```bash
+lightning --version                 # already installed? prefer it — a project venv often has it
 uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
 lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```
 
 Python snippets: `uv run --with lightning-sdk python script.py`.
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## Resolving org and teamspace (do this first)
 

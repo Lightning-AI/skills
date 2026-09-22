@@ -10,6 +10,7 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ## Setup & auth
 
 ```bash
+lightning --version                 # already installed? prefer it — a project venv often has it
 uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
 pip install lightning-sdk           # or persistent install
 lightning login                     # browser flow; or set env vars for headless use:
@@ -21,6 +22,17 @@ CLI is running — refresh with `uvx --refresh lightning-sdk` (or
 `pip install -U lightning-sdk` for a persistent install).
 
 Credentials are stored in `~/.lightning/credentials.json`. Python snippets can run via `uv run --with lightning-sdk python script.py`.
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## Resolving org and teamspace (do this first)
 
@@ -115,6 +127,13 @@ Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or s
 - CPU: `CPU_SMALL`, `CPU` (default, 4 cores), `CPU_X_2/4/8/16`; big-disk: `DATA_PREP`, `DATA_PREP_MAX`, `DATA_PREP_ULTRA`
 - GPU: `T4`, `T4_X_2/4/8`, `L4`, `L4_X_2/4/8`, `L40S`, `L40S_X_2/4/8`, `RTXP_6000` (+`_X_2/4/8`), `A100` (+`_X_2/4/8`), `H100` (+`_X_2/4/8`), `H200`, `H200_X_8`, `B200_X_8`
 - `A100_40GB*`/`A100_80GB*` variants exist in the SDK but are hidden from CLI `--machine` (usable with `studio switch` and in Python).
+
+**This list is the complete set — never probe the API for machine names.** For per-hour prices or
+cloud-specific SKU slugs, the live catalog is
+`GET /v1/core/accelerators?cloudProvider=<MACHINE|AWS|GCP|LAMBDA_LABS|NEBIUS|VOLTAGE_PARK|VULTR>`
+(no auth needed, so plain `curl` works). `/v1/accelerators`, `/v1/accelerator-catalog`,
+`/v1/pricing` and `/v1/compute/accelerators` do **not** exist — they all return `code: 5`. Costing
+recipes live in the `lightning-cost-estimation` skill.
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 

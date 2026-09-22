@@ -10,6 +10,7 @@ A Job runs a command on a dedicated cloud machine and terminates when done. Two 
 ## Setup & auth
 
 ```bash
+lightning --version                 # already installed? prefer it — a project venv often has it
 uvx lightning-sdk --version         # CLI without installing; `lightning` == `lightning-sdk`
 lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
@@ -20,6 +21,17 @@ CLI is running — refresh with `uvx --refresh lightning-sdk` (or
 `pip install -U lightning-sdk` for a persistent install).
 
 Python snippets: `uv run --with lightning-sdk python script.py`.
+
+### Running inside an agent sandbox (do this first)
+
+Two environment traps break *every* command below before it reaches the API:
+
+- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
+  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
+- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
+  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
+  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
+  credential — instead of disabling the sandbox wholesale.
 
 ## Resolving org and teamspace (do this first)
 
@@ -183,6 +195,13 @@ but for studio jobs writing to home is the intended path.
 ### Machines
 
 `CPU_SMALL`, `CPU`, `CPU_X_2/4/8/16`, `DATA_PREP(_MAX/_ULTRA)`, `T4(_X_2/4/8)`, `L4(_X_2/4/8)`, `L40S(_X_2/4/8)`, `RTXP_6000(_X_2/4/8)`, `A100(_X_2/4/8)`, `H100(_X_2/4/8)`, `H200(_X_8)`, `B200_X_8`. Multi-GPU `_X_N` variants bill N GPUs; MMT bills per machine × `num_machines`.
+
+**This list is the complete set — never probe the API for machine names.** For per-hour prices or
+cloud-specific SKU slugs, the live catalog is
+`GET /v1/core/accelerators?cloudProvider=<MACHINE|AWS|GCP|LAMBDA_LABS|NEBIUS|VOLTAGE_PARK|VULTR>`
+(no auth needed, so plain `curl` works). `/v1/accelerators`, `/v1/accelerator-catalog`,
+`/v1/pricing` and `/v1/compute/accelerators` do **not** exist — they all return `code: 5`. Costing
+recipes live in the `lightning-cost-estimation` skill.
 
 ## Example workflows
 
