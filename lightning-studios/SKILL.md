@@ -22,6 +22,12 @@ CLI is running — refresh with `uvx --refresh lightning-sdk` (or
 
 Credentials are stored in `~/.lightning/credentials.json`. Python snippets can run via `uv run --with lightning-sdk python script.py`.
 
+**Inside an agent sandbox**, if every call fails with `NameResolutionError` ("Failed to resolve
+'lightning.ai'"), the sandbox's network allowlist doesn't include Lightning. Ask the user to allow
+`lightning.ai` and `*.lightning.ai` for the sandbox (Claude Code: `/sandbox`); don't disable the
+sandbox. Anything you run in the background or poll with runs in the same sandbox and fails the
+same way, often silently.
+
 ## Resolving org and teamspace (do this first)
 
 Every studio lives in a teamspace owned by either an organization or a user. **Never guess.** Resolve in this order:
@@ -118,6 +124,42 @@ Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or s
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
+### Choose the cloud before the first GPU start
+
+A Studio's cloud is fixed when it's created, and `studio switch` can't move it. The default cloud
+doesn't sell every GPU at every count: on AWS an H200 exists only as an 8-GPU machine. **When
+`--machine` names a GPU the Studio's cloud doesn't offer, `studio start` can come up on a CPU
+machine with only a warning**, and you keep paying while you work on the wrong hardware.
+
+So for any GPU Studio, find a cloud that sells the machine at the GPU count you want, then create
+the Studio on it with `--cloud <cluster-id>`. The live catalog needs no auth. Read it with
+`lightning api` rather than `curl`, because agent permission rules often block `curl` while
+allowing `lightning`. The provider → cluster-id table is in `lightning-cost-estimation`
+(*Cloud providers*); Lightning Cloud (`MACHINE`) is the usual first choice.
+
+```bash
+lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
+  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .availableInSeconds, .outOfCapacity] | @tsv'
+lightning studio start --name my-studio --teamspace owner/teamspace --machine H200 --cloud lightning-baremetal --create
+```
+
+### Check what actually started
+
+Right after every `start` or `switch` onto a GPU, confirm the hardware from inside the Studio
+before uploading data or launching work:
+
+```bash
+uv run --with lightning-sdk python - <<'EOF'
+from lightning_sdk import Studio, Teamspace
+studio = Studio(name="my-studio", teamspace=Teamspace("my-teamspace", org="my-org"))
+out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
+print(studio.status, out if code == 0 else "NO GPU: this is not the machine you asked for")
+EOF
+```
+
+If there's no GPU, stop that Studio and follow *Choose the cloud* above. Don't retry the same
+command.
+
 ## Example workflows
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
@@ -173,6 +215,22 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - `run*` methods and `studio switch` require status `Running`; `start()` on a studio already running on a different machine raises — use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
 - `studio create` does not attach compute; `studio start --create` does both.
+- **`studio start --machine <GPU>` can silently land on CPU** when the Studio's cloud doesn't sell
+  that GPU at that count (e.g. 1× H200 on the default AWS cloud). It prints only a "custom
+  instance type that hasn't been vetted" warning. A later `studio switch --machine H200` then
+  fails, because the cloud is fixed at creation. Always run *Check what actually started*, and
+  create GPU Studios with `--cloud` (see *Choose the cloud*).
+- **For a one-shot run (train, eval, batch job), prefer a job (`lightning-jobs`) to a Studio.** A
+  job stops billing when its command exits, including when it crashes. A Studio keeps billing on
+  an idle GPU until someone notices. Use a Studio when the user wants an interactive box.
+- **Read the log within the first minute of any long command** you start with `run_and_detach`
+  or `nohup`. Library and argument errors crash in seconds, and a GPU nobody is watching bills
+  just the same. `studio.run("tail -n 40 ~/train.log")` is enough.
+- **Treat a silent monitor as a failure, not as "still running".** A poller with no deadline, or
+  one that only matches progress lines, reports nothing through a crash. So does one running
+  somewhere that can't reach lightning.ai, such as a sandboxed background command. Give every
+  poller a deadline, match crash signatures (`Traceback`, `Error`, `Killed`, `CUDA out of
+  memory`) as well as progress, and check that it prints its first line before relying on it.
 - **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
 - **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because a `-F` field turns the GET into a spec'd request. Call it bare and slice with `-q`.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
