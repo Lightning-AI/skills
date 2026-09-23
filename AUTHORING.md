@@ -51,7 +51,7 @@ has a reason not to:
 
 | Section | Purpose |
 |---|---|
-| `## Setup & auth` | `uvx lightning-sdk`, required env vars / `lightning login`, how to get a key |
+| `## Setup & auth` | the standard install line + troubleshooting table (below), required env vars / `lightning login`, how to get a key |
 | `## Resolving org and teamspace (do this first)` | never guess — resolve via `lightning api /v1/memberships`, ask the user if ambiguous |
 | `## CLI reference` | the `lightning <group> <cmd>` surface the skill uses |
 | `## Python SDK` | the equivalent `lightning_sdk` calls (**omit if the skill is CLI-only** — e.g. `lightning-artifacts`) |
@@ -61,7 +61,7 @@ has a reason not to:
 
 ### Conventions every skill follows
 
-- **CLI-first.** Prefer `uvx lightning-sdk` and the `lightning` CLI. `lightning
+- **CLI-first.** Prefer the `lightning` CLI. `lightning
   api /path …` (a `gh api`-style raw client: `-X`, `-f`/`-F`, `-H`, `--input`,
   `-q`) is the escape hatch for endpoints the CLI doesn't wrap — reach for it
   before dropping to Python. Only add a Python section when it adds something the
@@ -75,6 +75,24 @@ has a reason not to:
   endpoint 401s on basic auth — mint a token first" is worth more than three
   paragraphs of prose. Every gotcha in these skills came from a real error.
 
+### The standard setup block
+
+Every skill that runs `lightning` opens `## Setup & auth` with the same install
+line and troubleshooting table. Copy them verbatim from an existing skill (e.g.
+`lightning-jobs`) and keep them identical across skills: each skill is
+installable on its own, so the text can't live in a shared file.
+
+- **Reuse, else install once:** `command -v lightning >/dev/null || uv tool install
+  lightning-sdk`. An existing install (a user's venv, pipx, `uv tool`) always wins,
+  and a fresh one lands in uv's own tool env, never in the user's project.
+- **Plain `lightning …` in every command after that.** Don't write `uvx
+  lightning-sdk …` in examples: it's the fallback for when installing is blocked,
+  and it lives in the table.
+- **Python is a separate dependency.** The CLI install doesn't make `lightning_sdk`
+  importable. Skills with Python snippets add the standard paragraph: `uv run
+  --with lightning-sdk` for one-off scripts, or ask and add it to the user's
+  project with the project's own tool.
+
 ## Test a skill before committing it (required)
 
 Skills are only useful if their commands run. Verify against a control plane —
@@ -86,8 +104,9 @@ export LIGHTNING_CLOUD_URL=http://localhost:9800     # dev control plane, if tes
 export LIGHTNING_API_KEY=<key>
 export LIGHTNING_USER_ID=<user-id>                   # optional
 
-uvx lightning-sdk --version                          # CLI is reachable
-uvx lightning-sdk api /v1/memberships -q '.memberships[] | [.name, .projectId] | @tsv'
+command -v lightning >/dev/null || uv tool install lightning-sdk
+lightning --version                                  # CLI is reachable
+lightning api /v1/memberships -q '.memberships[] | [.name, .projectId] | @tsv'
 ```
 
 Then **run every command in the skill top to bottom** with real values and

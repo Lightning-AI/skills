@@ -1,6 +1,6 @@
 ---
 name: lightning-blog
-description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (uvx lightning-sdk) - create a draft, import a Markdown file with the bundled md2blocks.py converter, write the body as EditorJS blocks, turn SVG charts and diagrams into dark-mode PNGs and upload them, set title/description/slug/category/author/social image/published date, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, chart, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this markdown/writeup into a blog post", "add a chart to the blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
+description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (from the `lightning-sdk` package) - create a draft, import a Markdown file with the bundled md2blocks.py converter, write the body as EditorJS blocks, turn SVG charts and diagrams into dark-mode PNGs and upload them, set title/description/slug/category/author/social image/published date, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, chart, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this markdown/writeup into a blog post", "add a chart to the blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
 ---
 
 # Lightning AI blog (author, edit and publish lightning.ai/blog posts)
@@ -27,10 +27,21 @@ Creating a blog post creates its lit page automatically. The public URL is
 ## Setup & auth
 
 ```bash
-lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
+command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 lightning login                        # browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # non-interactive (CI, agents)
 ```
+
+Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
+env, so no project venv is touched. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
+| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
+| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` (the `gh api`-style raw client) is the whole interface here —
 there is no dedicated `lightning blog` command group. Flags: `-X` method,
@@ -40,8 +51,6 @@ there is no dedicated `lightning blog` command group. Flags: `-X` method,
 `-q` has no raw mode (there is no `-q -r`) — it prints jq's JSON output, so
 pipe the response to `jq -r` whenever you need a bare string.
 
-If the installed `lightning` is older than the `api` subcommand
-(`Error: No such command 'api'`), call it through `uvx lightning-sdk api …`.
 Set `LIGHTNING_CLOUD_URL` to target a non-prod control plane (default
 `https://lightning.ai`).
 
@@ -59,17 +68,6 @@ orphan draft. The flag is granted by the platform team.
 
 No org/teamspace resolution is needed — blog posts are global, not
 project-scoped.
-
-### Running inside an agent sandbox (do this first)
-
-Two environment traps break *every* command below before it reaches the API:
-
-- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
-  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
-- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
-  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
-  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
-  credential — instead of disabling the sandbox wholesale.
 
 ## What each control in the blog editor maps to
 

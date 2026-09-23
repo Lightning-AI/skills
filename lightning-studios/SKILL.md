@@ -10,28 +10,28 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ## Setup & auth
 
 ```bash
-lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
-# persistent alternative: pip install lightning-sdk
+command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 lightning login                     # browser flow; or set env vars for headless use:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required (Basic auth is user_id:api_key)
 ```
 
-If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
-CLI is running — refresh with `uvx --refresh lightning-sdk` (or
-`pip install -U lightning-sdk` for a persistent install).
+Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
+env, so no project venv is touched. If setup doesn't go cleanly:
 
-Credentials are stored in `~/.lightning/credentials.json`. Python snippets can run via `uv run --with lightning-sdk python script.py`.
+| Symptom | Fix |
+|---|---|
+| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
+| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
+| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
-### Running inside an agent sandbox (do this first)
+Credentials are stored in `~/.lightning/credentials.json`.
 
-Two environment traps break *every* command below before it reaches the API:
-
-- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
-  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
-- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
-  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
-  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
-  credential — instead of disabling the sandbox wholesale.
+Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
+one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
+user's project, ask, then add `lightning-sdk` as a dependency with the project's own tool
+(`uv add`, `poetry add`, `pip install`).
 
 ## Resolving org and teamspace (do this first)
 

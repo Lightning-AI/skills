@@ -14,7 +14,7 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
 
-All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI (runnable via `uvx`), plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
+All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI, plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
 
 ## Install
 
@@ -63,7 +63,7 @@ cp -r $SKILLS ~/.claude/skills/
 
 ## Prerequisites
 
-- `uv` installed (skills invoke the CLI via `uvx lightning-sdk`)
+- `uv` installed. Skills reuse an existing `lightning` CLI, or install one with `uv tool install lightning-sdk` (user-level, outside your project's env)
 - A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` + `LIGHTNING_USER_ID`
 
 ## Conventions

@@ -10,9 +10,25 @@ A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default
 ## Setup & auth (sandbox-specific)
 
 ```bash
-lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
+command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 # `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
 ```
+
+Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
+env, so no project venv is touched. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
+| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
+| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+
+Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
+one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
+user's project, ask, then add `lightning-sdk` as a dependency with the project's own tool
+(`uv add`, `poetry add`, `pip install`).
 
 **Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Sandboxes need an **org- or teamspace-scoped API key** in `LIGHTNING_SANDBOX_API_KEY`; a personal `lightning login` credential fails with *"Use a teamspace- or org-scoped API key (Members → API keys), not your personal login key."*
 
@@ -30,17 +46,6 @@ lightning api /v1/memberships | jq -r '.memberships[] | select(.ownerType=="orga
 ```
 
 Snapshot/stop of persistent sandboxes needs a **teamspace-scoped** key (org-scoped is not enough).
-
-### Running inside an agent sandbox (do this first)
-
-Two environment traps break *every* command below before it reaches the API:
-
-- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
-  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
-- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
-  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
-  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
-  credential — instead of disabling the sandbox wholesale.
 
 ## CLI reference
 

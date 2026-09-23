@@ -1,6 +1,6 @@
 ---
 name: lightning-artifacts
-description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (uvx lightning-sdk) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
+description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (from the `lightning-sdk` package) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
 ---
 
 # Lightning AI Artifacts (durable shareable file links)
@@ -12,7 +12,7 @@ The control plane streams the bytes from storage on every request, so unlike a
 presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
-**This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`):
+**This whole flow runs through the `lightning` CLI** (from the `lightning-sdk` package):
 `lightning cp` / `ls` / `rm` handle the files, and `lightning api` — a
 `gh api`-style raw HTTP client — makes the two publish calls around them. No
 Python, no SDK code, not even a `curl`.
@@ -20,7 +20,7 @@ Python, no SDK code, not even a `curl`.
 ## Setup & auth
 
 ```bash
-lightning --version || uvx lightning-sdk --version   # an installed CLI wins; else uvx runs it ad-hoc
+command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 lightning login                       # interactive browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=...    # non-interactive alternative (CI, agents)
 ```
@@ -31,26 +31,22 @@ extra auth steps. Get a key from lightning.ai → user/org settings, or
 key** — read it from the environment. To target a non-prod control plane, set
 `LIGHTNING_CLOUD_URL` (default `https://lightning.ai`).
 
-If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
-CLI is running — refresh with `uvx --refresh lightning-sdk` (or
-`pip install -U lightning-sdk` for a persistent install).
+Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
+env, so no project venv is touched. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
+| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
+| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
+| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
 typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
 to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
 response headers. Fields are JSON body for POST/PUT-with-body and **query
 params** when the request also has `--input` or is a GET.
-
-### Running inside an agent sandbox (do this first)
-
-Two environment traps break *every* command below before it reaches the API:
-
-- **`uvx` needs a writable cache.** If `~/.cache/uv` is denied (`Operation not permitted`), set
-  `UV_CACHE_DIR="$TMPDIR/uv"` — or skip `uvx` entirely and use an already-installed `lightning`.
-- **TLS needs certifi's CA bundle.** A blanket `**/*.pem` read-deny rule (common in agent sandbox
-  configs, meant for private keys) also hides `site-packages/certifi/cacert.pem`, so every
-  `lightning` command fails on TLS. Allow that one path — it is a public CA bundle, not a
-  credential — instead of disabling the sandbox wholesale.
 
 ## Resolve the teamspace (do this first)
 
