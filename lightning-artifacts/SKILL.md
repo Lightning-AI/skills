@@ -43,9 +43,9 @@ env, so no project venv is touched. If setup doesn't go cleanly:
 | Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
-typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
-to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
-response headers. Fields are JSON body for POST/PUT-with-body and **query
+typed field, `-H` header, `--input <file>` request body (`--input -` to pipe
+one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include response
+headers, `--silent` no output. Fields with no `-X` make it a POST. Fields are JSON body for POST/PUT-with-body and **query
 params** when the request also has `--input` or is a GET.
 
 ## Resolve the teamspace (do this first)
@@ -60,19 +60,21 @@ use**:
 lightning api /v1/memberships -q '.memberships[] | [.name, .projectId, .ownerType, .ownerId] | @tsv'
 ```
 
-Capture the row's `projectId` and resolve the owner's name (teamspaces are
-org-owned; the membership only carries the id):
+Capture the row's `projectId` and resolve the owner's name. The membership
+only carries the owner's id, and the lookup depends on `ownerType`:
 
 ```bash
 PID=<projectId-from-above>
-OWNER=$(lightning api "/v1/orgs/<ownerId-from-above>" -q .name | tr -d '"')
 TSNAME=<name-from-above>
+OWNER=$(lightning api "/v1/orgs/<ownerId-from-above>" | jq -r .name)   # ownerType "organization"
+# ownerType "user" is a personal teamspace (usually yours): OWNER=$(lightning api /v1/auth/user | jq -r .username)
 ```
 
 Teamspaces you can access through org-level permissions (rather than direct
 membership) don't appear in `/v1/memberships` — if the user names one you
-can't find, ask them for the `<owner>/<teamspace>` pair and get the project id
-from `lightning api "/v1/projects?name=..."` or from them directly.
+can't find, ask them for the `<owner>/<teamspace>` pair and the project id.
+There is no list-projects-by-name endpoint (`/v1/projects?name=…` isn't in the
+API), so don't try to look it up.
 
 ## Publish a durable link (the CLI flow)
 
@@ -89,7 +91,7 @@ artifact. Copy-paste function:
 share() {
   local FILE="$1" NAME="${2:-$(basename "$1")}" CT="${3:-$(file -b --mime-type "$1")}"
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
-  # 1. upload; cp picks the teamspace's default cloud account and prints which
+  # 1. upload; the server picks where to store it (see Gotchas)
   lightning cp "$FILE" "lit://$OWNER/$TSNAME/$KEY" >&2 || return 1
   # 2. the blob's clusterId from the listing is the storage cluster the
   #    publish call needs (see Gotchas — it is not always the cluster the
@@ -221,8 +223,11 @@ URL=$(share model-metrics.json)
   cluster's id fails with HTTP 500. The artifacts tree listing reports each
   blob's real `clusterId` — always read it from there (the `share` function
   does). Deletes don't take a cluster at all.
-- **`lightning cp` needs no cluster flag** — it resolves the teamspace's
-  default cloud account and prints which it chose. Pass
+- **`lightning cp` needs no cluster flag** — the server picks the storage.
+  Only if it rejects the upload for a missing cluster does `cp` choose one
+  itself (`LIGHTNING_CLUSTER_ID` first, which is set inside a Studio, then the
+  teamspace's only or default cloud account) and warn `No cloud account
+  specified. Using cloud account: <id>.` Pass
   `--cloud-account <id>` only to steer placement deliberately, and pick a
   cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
   (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the

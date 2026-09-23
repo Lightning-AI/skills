@@ -89,7 +89,7 @@ There is no `cp`/upload CLI — move files via `run` with shell commands, or the
 ## Python SDK
 
 ```python
-from lightning_sdk.sandbox import Sandbox, SandboxConfig, RunCommandOpts, NetworkPolicy
+from lightning_sdk.sandbox import Sandbox, SandboxConfig, RunCommandOpts, NetworkPolicy, PtyCreateOpts
 
 # optional explicit config; otherwise env (LIGHTNING_SANDBOX_API_KEY) / lightning login creds are used
 Sandbox.configure(api_key="...")
@@ -136,7 +136,7 @@ for s in client.list(teamspace="owner/teamspace").sandboxes: print(s.sandbox_id,
 sb = client.get("sbx-...")
 ```
 
-Interactive PTY (needs `pip install websocket-client`): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. PTY exit codes are unreliable (0/-1/None only) — prefer `run_command` when you need exit codes.
+Interactive PTY (`websocket-client` ships with the SDK): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. The result's `exit_code` is the shell's real status on a clean close, `0` when the backend reports none, `-1` if the connection broke (`error` says why) and `None` while running — prefer `run_command` when you need a guaranteed exit code.
 
 ## Docker inside a sandbox
 
@@ -278,7 +278,7 @@ fresh = Sandbox.create(name="experiment-1", snapshot_id=snap.id,
 ```bash
 lightning api /v1/core/sandboxes -X GET -f "organizationId=${ORG_ID}" -f "projectId=${PROJECT_ID}" -f limit=20
 lightning api /v1/core/sandboxes -X GET ... | jq -r '.sandboxes[] | .name // .id'
-lightning api "/v1/core/sandboxes/${SANDBOX_ID}" -f "organizationId=${ORG_ID}"
+lightning api "/v1/core/sandboxes/${SANDBOX_ID}" -X GET -f "organizationId=${ORG_ID}"   # -X GET: fields without it send a POST
 lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls -F detached=false
 ```
 
@@ -292,11 +292,11 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls 
 - **A CIDR allowlist does not implicitly permit DNS.** `allow_cidrs` is enforced at the IP layer, and the sandbox's `/etc/resolv.conf` points at `1.1.1.1` and `8.8.8.8` — outside any realistic application allowlist — so every hostname lookup fails with `Temporary failure in name resolution` while raw-IP connections work. Include the resolver addresses (`1.1.1.1/32`, `8.8.8.8/32`) in the allowlist, or point the sandbox at a resolver inside it.
 - **Files restored from a snapshot come back with mtime `1970-01-01T00:00:00Z`.** Epoch-zero timestamps break `make`, `ccache`, and pip/setuptools staleness checks — which bites hardest in the pre-baked-environment use case snapshots exist for. Touch files you depend on, or avoid mtime-based staleness logic in a restored sandbox.
 - **Egress policy is Python-SDK-only.** `sandbox create` has no network-policy flag, so `deny-all` and CIDR allowlists require dropping into `lightning_sdk`; everything else here (create, run, snapshot, list, delete) is CLI-doable.
-- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced `lightning machine list` catalog — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
+- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced accelerator catalog (or in `lightning machine list`) — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
 - Ephemeral (default) sandboxes lose everything on stop; only `persistent=True` gives stop/resume. Snapshots capture the filesystem only, never running processes.
 - **The default runtime is `node24` — Node.js only, no Python.** Pass `runtime="python313"` / `--runtime python313` for Python workloads (naming: `node22`, `node24`, `python313`, plus the `-docker` variants; invalid ids fail with "invalid runtime"). `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
 - To run containers inside a sandbox, use a `-docker` runtime (`--runtime python313-docker`) or `docker=True` / `--docker` — never hand-install Docker on a plain runtime. See [Docker inside a sandbox](#docker-inside-a-sandbox), especially the `--network=host` requirement.
 - Public port URLs only exist for ports declared at create time (`ports=[8080]` / `--port 8080`); there is no way to expose a port later. `create` normally returns them already populated in `port_urls`; if empty, re-`get` the sandbox.
 - Network policy is **create-time only** — you cannot change egress rules on a running sandbox. Default is open egress (`allow-all`); use `"deny-all"` or CIDR allowlists for untrusted code.
 - Commands run as **root** inside the sandbox.
-- Error "organization_id is required" → the API key isn't org/teamspace-scoped; "API key is not authorized for this project" → the teamspace-scoped key is bound to a different teamspace.
+- Scoped-key errors: the CLI and SDK turn the raw server errors into hints. `Use a teamspace- or org-scoped API key ...` (raw: "organization_id is required") → you're on a personal login key. `Your teamspace-scoped API key is not authorized for the project requested via teamspace= ...` (raw: "API key is not authorized for this project") → the key is bound to a different teamspace. `This operation requires a teamspace-scoped API key ...` → snapshot/stop with an org-scoped key. Only raw `lightning api` calls show the raw wording.

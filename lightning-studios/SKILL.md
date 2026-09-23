@@ -12,7 +12,7 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ```bash
 command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 lightning login                     # browser flow; or set env vars for headless use:
-export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required (Basic auth is user_id:api_key)
+export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # USER_ID optional: with it Basic auth, without it the key is a Bearer token
 ```
 
 Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
@@ -37,7 +37,7 @@ user's project, ask, then add `lightning-sdk` as a dependency with the project's
 
 Every studio lives in a teamspace owned by either an organization or a user. **Never guess.** Resolve in this order:
 
-1. Explicit `--teamspace owner/teamspace` flag (owner = org or user name) / `Teamspace(name, org=...)` or `Teamspace(name, user=...)` in Python (`org` and `user` are mutually exclusive).
+1. Explicit `--teamspace owner/teamspace` flag (owner = org or user name) / `Teamspace("owner/teamspace")` in Python (the separate `org=`/`user=` arguments are deprecated).
 2. Env vars `LIGHTNING_ORG`, `LIGHTNING_TEAMSPACE`, `LIGHTNING_USERNAME`, or config defaults in `~/.lightning/config.yaml` (`lightning config get teamspace`).
 3. Otherwise list the options and **ask the user which org/teamspace to use**:
 
@@ -72,14 +72,14 @@ lightning studio start --name my-studio --teamspace owner/teamspace --gpus L4:4 
 lightning studio list --teamspace owner/teamspace [--all] [--sort-by status]   # default lists only your studios
 lightning studio switch --name my-studio --teamspace owner/teamspace --machine A100   # requires Running studio
 lightning studio stop --name my-studio --teamspace owner/teamspace
-lightning studio delete --name my-studio --teamspace owner/teamspace -y        # -y/--yes: required non-interactively
+lightning studio delete my-studio --teamspace owner/teamspace -y              # NAME is positional here; -y/--yes: required non-interactively
 
 # ssh / one-shot connect (create + start + ssh)
 lightning studio ssh --name my-studio --teamspace owner/teamspace
 lightning studio connect my-studio --teamspace owner/teamspace --machine CPU
 
-# machines available
-lightning machine list
+# machine names the CLI accepts (offline list; says nothing about availability)
+lightning machine list [--json]
 ```
 
 ### Files: `lit://` paths
@@ -98,7 +98,7 @@ lightning rm lit://owner/teamspace/studios/my-studio/old.txt [-r] [-f]
 ```python
 from lightning_sdk import Machine, Studio, Teamspace
 
-ts = Teamspace("my-teamspace", org="my-org")            # or user="username" — never both
+ts = Teamspace("my-org/my-teamspace")                  # owner/teamspace; org=/user= are deprecated
 studio = Studio(name="my-studio", teamspace=ts, create_ok=True)  # create_ok=False -> error if missing
 
 studio.start(machine=Machine.CPU)          # blocking; interruptible=True for spot pricing
@@ -124,16 +124,18 @@ studio.delete()
 Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or slug):
 
 - CPU: `CPU_SMALL`, `CPU` (default, 4 cores), `CPU_X_2/4/8/16`; big-disk: `DATA_PREP`, `DATA_PREP_MAX`, `DATA_PREP_ULTRA`
-- GPU: `T4`, `T4_X_2/4/8`, `L4`, `L4_X_2/4/8`, `L40S`, `L40S_X_2/4/8`, `RTXP_6000` (+`_X_2/4/8`), `A100` (+`_X_2/4/8`), `H100` (+`_X_2/4/8`), `H200`, `H200_X_8`, `B200_X_8`
+- GPU: `T4_SMALL`, `T4`, `T4_X_2/4/8`, `L4`, `L4_X_2/4/8`, `L40S`, `L40S_X_2/4/8`, `RTXP_6000` (+`_X_2/4/8`), `A100` (+`_X_2/4/8`), `H100` (+`_X_2/4/8`), `H200` (+`_X_2/4/8`), `B200`, `B200_X_8`
 - `A100_40GB*`/`A100_80GB*` variants exist in the SDK but are hidden from CLI `--machine` (usable with `studio switch` and in Python).
 
 The names above are current as of writing and SKUs do get added, so treat the list as a starting
-point, not a closed set. To see what a teamspace can actually launch, list them with
-`lightning machine list` rather than inventing a catalog endpoint — `/v1/accelerators`,
-`/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all return `code: 5`. For
-per-hour prices and cloud-specific SKU slugs the live source is
-`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works); the
-`lightning-cost-estimation` skill has the provider values and the costing recipes.
+point, not a closed set. `lightning machine list` prints the names your installed CLI accepts, but
+it is an offline list and says nothing about what a teamspace can launch. For live availability
+and prices, use `Teamspace("owner/teamspace").list_machines()` in Python (drops out-of-capacity
+machines; each has `cost`/`interruptible_cost`) or
+`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works; the
+`lightning-cost-estimation` skill has the provider values and the costing recipes). Don't invent a
+catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and
+`/v1/compute/accelerators` all return `code: 5`.
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
@@ -150,7 +152,7 @@ lightning studio switch --name exp-1 --teamspace my-org/my-teamspace --machine L
 ```
 ```python
 from lightning_sdk import Studio
-studio = Studio("exp-1", teamspace="my-teamspace", org="my-org")
+studio = Studio("exp-1", teamspace="my-org/my-teamspace")
 out, code = studio.run_with_exit_code("cd ~/src && pip install -r requirements.txt && python train.py")
 print(out)
 ```
@@ -193,6 +195,6 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
 - `studio create` does not attach compute; `studio start --create` does both.
 - **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
-- **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because a `-F` field turns the GET into a spec'd request. Call it bare and slice with `-q`.
+- **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
-- In Python, `teamspace=` takes the bare teamspace name with `org=`/`user=` separate; `"owner/name"` combined strings only work in CLI `--teamspace` flags.
+- In Python, `teamspace=` takes the same `"owner/teamspace"` string as the CLI `--teamspace` flag (for `Teamspace`, `Studio` and `Job`). The separate `org=`/`user=` arguments still work but are deprecated and emit a `DeprecationWarning`; passing both forms raises `ValueError`.

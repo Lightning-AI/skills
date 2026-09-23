@@ -12,7 +12,7 @@ A Deployment runs a container (or an auto-built vLLM server for a HuggingFace mo
 ```bash
 command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
 lightning login                     # browser flow; or headless:
-export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
+export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # USER_ID optional: with it Basic auth, without it the key is a Bearer token
 ```
 
 Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
@@ -33,7 +33,7 @@ user's project, ask, then add `lightning-sdk` as a dependency with the project's
 
 ## Resolving org and teamspace (do this first)
 
-Deployments live in a teamspace owned by an organization or a user. **Never guess.** Use explicit `--teamspace owner/teamspace` (Python: `Teamspace(name, org=...)` or `user=...`), env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:
+Deployments live in a teamspace owned by an organization or a user. **Never guess.** Use explicit `--teamspace owner/teamspace` (Python: `teamspace="owner/teamspace"`; the separate `org=`/`user=` arguments are deprecated), env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:
 
 ```bash
 lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
@@ -53,7 +53,7 @@ lightning config set teamspace "$OWNER/$TS"     # every command now defaults her
 
 ## CLI reference
 
-Subcommands: `create`, `list`, `inspect`, `update`, `delete`, `logs`, `reload-weights`. There is no `stop` — stopping = scaling to zero via `update --min-replicas 0 --max-replicas 0`.
+Subcommands: `create`, `list`, `inspect`, `update`, `delete`, `logs` (+ `logs download`), `reload-weights`, and `env` / `secret` (`list`/`set`/`delete` on a running deployment). There is no `stop` — stopping = scaling to zero via `update --min-replicas 0 --max-replicas 0`.
 
 ```bash
 # container deployment (a --port is required for non-model deployments)
@@ -66,7 +66,8 @@ lightning deployment create llama --teamspace owner/teamspace \
   [--hf-token-secret <secret-name>] [--tensor-parallel-size 2] [--max-model-len 8192] \
   [--quantization fp8] [--dtype bfloat16] [--dry-run] [--force]
 
-# cloud account — defaults to lightning-public-prod and prints a notice saying so.
+# cloud account — if you pass none, the SDK picks one (config `cloud-account`, then
+# LIGHTNING_CLUSTER_ID, then the teamspace's default binding) and prints which on stderr.
 # Other deployments in the same teamspace may sit on a different account, which
 # `deployment list` shows in its last column; match it with --cloud when relevant.
 lightning deployment create ... --cloud gcp-lightning-public-prod
@@ -104,7 +105,7 @@ from lightning_sdk.api.deployment_api import (
     RollingUpdateReleaseStrategy, HttpHealthCheck,
 )
 
-dep = Deployment("my-api", teamspace="my-teamspace", org="my-org")   # SDK takes the BARE teamspace name + org=/user= — "owner/name" strings are CLI-only
+dep = Deployment("my-api", teamspace="my-org/my-teamspace")   # owner/teamspace, same as the CLI; org=/user= are deprecated
 dep.start(
     image="nginx:latest",
     machine=Machine.CPU,
@@ -120,7 +121,7 @@ print(dep.urls)                                 # endpoint URL(s); no .status pr
 print(dep.running_replicas, dep.pending_replicas, dep.failing_replicas)
 r = dep.get(path="/health")                     # convenience HTTP; auto-auths only for ApiKeyAuth
 
-# changing image/machine/command/env creates a NEW RELEASE and needs a release strategy
+# changing image/command/env/entrypoint/spot/... creates a NEW RELEASE and needs a release strategy
 dep.update(image="nginx:1.27", release_strategy=RollingUpdateReleaseStrategy(max_surge=1, max_unavailable=0))
 dep.update(min_replicas=1, max_replicas=8)      # scaling: no new release, no strategy needed
 dep.stop()                                      # scales to 0; blocks until replicas reach 0
@@ -182,7 +183,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $LIGHTNING_AP
 ```
 ```python
 from lightning_sdk import Deployment
-dep = Deployment("hello-api", teamspace="my-teamspace", org="my-org")   # bare name + org, not "owner/name"
+dep = Deployment("hello-api", teamspace="my-org/my-teamspace")
 print(dep.urls)                       # e.g. ['https://80-dep-<id>-d.cloudspaces.litng.ai'] — available even while scaled to zero
 print(dep.get(path="/").status_code)  # sends the caller's Lightning API key for ApiKeyAuth
 ```
@@ -195,7 +196,8 @@ lightning deployment delete hello-api --teamspace my-org/my-teamspace --yes
 ```bash
 lightning deployment create qwen-served --teamspace my-org/my-teamspace \
   --model Qwen/Qwen2.5-7B-Instruct --machine L40S --min-replicas 0 --max-replicas 1 --api-key-auth --dry-run
-# review the resolved vLLM config, then re-run without --dry-run (add --ack <code> if warnings are listed)
+# review the model spec it prints, then re-run without --dry-run; if the real create reports
+# unacknowledged warnings, re-run with --ack <code> (repeatable) or --force
 lightning deployment logs qwen-served --teamspace my-org/my-teamspace -f   # watch it come up
 ```
 
@@ -212,8 +214,8 @@ lightning deployment update hello-api --teamspace my-org/my-teamspace --image ng
 ## Raw API fallback
 
 ```bash
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
-lightning api "/v1/projects/${PROJECT_ID}/deployments" -F limit=20 -q '.deployments[].name'
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[] | select(.name=="<teamspace>") | .projectId' | head -1)
+lightning api "/v1/projects/${PROJECT_ID}/deployments" -q '.deployments[].name'   # plain GET; -f/-F without -X would send a POST
 lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}"
 lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELETE
 ```
@@ -227,7 +229,7 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - `min_replicas=0` enables scale-to-zero and **genuinely stops billing at zero** — a teamspace credit balance stays flat while a deployment sits at zero replicas. The next request is served transparently: the edge accepts the connection and *holds it open* until a replica is ready (~6 minutes on a GPU image) and then returns a normal 200 — it does not return 503 or refuse, so any client without a short timeout just waits. `min_replicas >= 1` bills continuously — flag this cost to the user.
 - **The idle window before scale-to-zero is SDK-only.** `AutoScaleConfig(idle_threshold_seconds=...)` has no equivalent flag on `deployment create` or `deployment update`, so from the CLI you get the default and cannot tune how long a replica lingers.
 - **A health check is SDK-only too.** `HttpHealthCheck(path=..., port=...)` exists in Python but there is no `--health-check-path`/`--readiness-probe` flag, so a CLI-created deployment has nothing stopping traffic reaching a replica that is up but not ready.
-- Changing image/machine/command/env/entrypoint/spot forces a new release; the SDK raises `RuntimeError` if no `release_strategy` is passed (the CLI auto-adds a rolling update).
+- Changing image, command, env, entrypoint, path mappings, health check, cloud account, spot, quantity or max runtime forces a new release (switching the machine alone does not). The SDK raises `RuntimeError` if the deployment has no release strategy, neither passed nor already stored; the CLI auto-adds a rolling update.
 - `Deployment.start()` on an existing deployment silently becomes an update/restart — it won't error on a name collision.
 - A port is mandatory for non-model deployments (`ValueError` otherwise); `--model` defaults to 8000 and requires a GPU machine. In the SDK `ports` must be a **list** — passing an int fails with `TypeError: 'int' object is not iterable` raised from inside the SDK, which does not mention `ports`.
 - `AutoScaleConfig` accepts no `metric` at construction, then `start()` raises `ValueError: The autoscaling metric is required. Currently supported metrics are ['GPU', 'CPU', 'RPM']`. Always pass `metric=`; the traceback points at `start()`, not at the config object.
@@ -237,6 +239,6 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - Deleting is destructive and the CLI prompts unless `--yes`; confirm with the user first. **`Deployment deleted` is not "gone"** — the deployment keeps appearing in `deployment list` (and `list --all`) for 90 seconds to ~2.5 minutes afterwards, sometimes in `PENDING` with a stale replica count and `deletedAt: None`. Don't treat a post-delete listing as a failed delete, and don't poll `list` to confirm teardown; re-issue `delete` only if it is still there after a few minutes.
 - **`deployment logs` without `-f` can hang indefinitely.** A bounded read (`--tail 25`, no `--follow`) has been observed producing no output at all and never returning, so a scripted log fetch needs its own timeout. `-f` works.
 - **There is no cost surface for a deployment.** `deployment inspect` exposes `total_cost`, but it reads `0.0` even after ~34 minutes of L4 GPU time (~$0.40 of real spend), and stays 0 for the deployment's whole life — unlike jobs, whose `total_cost` does populate. No billing/usage endpoint resolves either. The only way to see what a deployment cost is to difference the teamspace credit balance before and after, and that field flips between full float precision and 2-decimal rounding between consecutive calls — so difference over a window long enough that the rounding is noise.
-- `--model` deployments may return validation warnings; re-run with `--ack <code>` or `--force`, and use `--dry-run` to preview the resolved vLLM config — though `--dry-run` prints only `served_model_name` and `weight_source`, not the machine, resolved vLLM args, image variant or replica config.
+- `--model` deployments may return validation warnings on create (`Deployment has unacknowledged warnings: ... Re-run with --ack <code> (repeatable) or --force.`). `--dry-run` never calls the server, so it never shows those warnings: it only echoes the model spec you set (`served_model_name`, `weight_source` and any vLLM flags you passed), not the machine, image variant or replica config.
 - **`--model` may be gated on your account, and the refusal is an opaque `403`.** `deployment create ... --model <hf-id>` can fail with `Exception: The jobs_service_create_deployment_with_http_info request failed to reach the server, response: 403.` — no server message, and `LIGHTNING_DEBUG=1` adds a traceback but still no reason. It is an entitlement, not a bad argument, so don't debug the model id or flags. Fall back to deploying a vLLM container image directly (`--image`), which needs no entitlement.
-- In the Python SDK, `teamspace=` must be the bare teamspace name with `org=`/`user=` passed separately; `Deployment("x", teamspace="owner/name")` fails with "Teamspace owner/name does not exist" — and in headless (env-var auth) runs that error is masked by a misleading "Neither name is provided nor can the user be inferred from the environment variable!".
+- In the Python SDK, `teamspace=` takes `"owner/teamspace"` like the CLI. The separate `org=`/`user=` arguments are deprecated (`DeprecationWarning`), and passing both forms raises `ValueError`. On SDKs older than 2026.7.31, the combined form failed with "Teamspace owner/name does not exist"; upgrade rather than splitting it.

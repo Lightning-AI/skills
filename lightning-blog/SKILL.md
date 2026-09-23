@@ -46,7 +46,7 @@ env, so no project venv is touched. If setup doesn't go cleanly:
 `lightning api` (the `gh api`-style raw client) is the whole interface here —
 there is no dedicated `lightning blog` command group. Flags: `-X` method,
 `-f key=val` string field, `-F key=val` typed field, `-H` header, `--input
-<file>` request body (`--input /dev/stdin` to pipe), `-q` jq filter (needs the
+<file>` request body (`--input -` to pipe), `-q` jq filter (needs the
 `jq` binary), `-i` include response headers, `--silent` suppress the body.
 `-q` has no raw mode (there is no `-q -r`) — it prints jq's JSON output, so
 pipe the response to `jq -r` whenever you need a bare string.
@@ -166,7 +166,8 @@ lightning api "/v1/blog-posts/$POST_ID" -X PUT \
   -f 'description=…' -f 'category=build'
 
 # author: resolve the user id from an exact username or email first
-AUTHOR=$(lightning api /v1/users/search -X GET -f 'query=karolis' | jq -r '.users[0].id')
+AUTHOR=$(lightning api /v1/users/search -X GET -f 'query=karolis' \
+  | jq -r --arg u karolis '.users[] | select(.username==$u) | .id')   # search is fuzzy; never take .users[0]
 lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "authorId=$AUTHOR"
 
 # published date (what the post displays; falls back to createdAt)
@@ -219,7 +220,7 @@ jq -c --arg path "$SLUG" '{content:(.|tostring), path:$path, published:true}' \
   /tmp/post.json > /tmp/publish.json
 lightning api "/v1/lit-pages/$PAGE_ID" -X PUT --input /tmp/publish.json \
   -q '.LitPage | {path, published}'
-curl -s -o /dev/null -w 'anon GET: %{http_code}\n' "https://lightning.ai/v1/blog-posts/$SLUG"
+curl -s -o /dev/null -w 'anon GET: %{http_code}\n' "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/blog-posts/$SLUG"
 ```
 
 Unpublishing is the same call with `published:false` — that one is safe to do
@@ -343,13 +344,16 @@ width (≥1200 px reads well) and the file size.
 
 Images (both the social/list image and inline `image` blocks) are uploaded to
 the post's **lit page**. This endpoint is multipart, which `lightning api`
-doesn't do — use `curl` with basic auth (`user_id:api_key`, the same pair the
-CLI stores in `~/.lightning/credentials.json`):
+doesn't do — use `curl` with basic auth (`user_id:api_key`). After a browser
+`lightning login` the pair lives in the credentials file, not in env vars, so
+fall back to it:
 
 ```bash
-UPLOAD_URL=$(curl -s -u "$LIGHTNING_USER_ID:$LIGHTNING_API_KEY" \
+AUTH="${LIGHTNING_USER_ID:+$LIGHTNING_USER_ID:$LIGHTNING_API_KEY}"
+AUTH="${AUTH:-$(jq -r '"\(.user_id):\(.api_key)"' "${LIGHTNING_CREDENTIAL_PATH:-$HOME/.lightning/credentials.json}")}"
+UPLOAD_URL=$(curl -s -u "$AUTH" \
   -F "file=@./diagram.png" \
-  "https://lightning.ai/v1/media/lit_page/$PAGE_ID/image" | jq -r .url)
+  "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/media/lit_page/$PAGE_ID/image" | jq -r .url)
 # → https://storage.googleapis.com/lightning-avatars/litpages/<page-id>/<uuid>.png
 ```
 

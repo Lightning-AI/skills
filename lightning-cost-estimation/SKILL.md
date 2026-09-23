@@ -24,7 +24,9 @@ before login:
 curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=MACHINE" | jq '.accelerator | length'
 ```
 
-The same call through the CLI (query string goes in the path, quoted):
+The same call through the CLI (query string goes in the path, quoted). `lightning api` always
+sends credentials, so this route needs `lightning login` or an API key first; only `curl` works
+logged out:
 
 ```bash
 command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
@@ -32,7 +34,7 @@ lightning api "/v1/core/accelerators?cloudProvider=MACHINE"
 ```
 
 Auth is only needed for the *optional* step of checking which clouds a teamspace can actually
-reach (`lightning login`, or `LIGHTNING_USER_ID` + `LIGHTNING_API_KEY`). `jq` is required for
+reach (`lightning login`, or `LIGHTNING_API_KEY`, optionally with `LIGHTNING_USER_ID`). `jq` is required for
 every recipe here.
 
 Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
@@ -73,7 +75,7 @@ answer — mention it only as "available if you enable that cloud account".
 | `spotPrice` | Interruptible/spot USD per hour. **`0` means the provider has no spot** — do not read it as free. It is also *not always cheaper* than `cost`; compare, don't assume. |
 | `slugMultiCloud` | Cross-cloud canonical name (`lit-h100-80gb-8`). **Use this to compare the same SKU across clouds.** |
 | `slug` / `instanceId` | Provider-specific names (`gpu-h100-8x` / `lit-h100-80gb-8` on Lightning, `p5.48xlarge` on AWS). |
-| `family` | `CPU`, `DATA-PREP`, `T4`, `L4`, `L40S`, `RTXP`, `A100`, `H100`, `H200`, `B200`, `TPU` |
+| `family` | `CPU`, `DATA-PREP`, `T4`, `L4`, `L40S`, `RTXP`, `A100`, `H100`, `H200`, `B200`, `TPU`. The SDK spells the RTX family `RTX PRO`, so filter with a loose regex (`RTX`). |
 | `resources.gpu` | GPUs per instance (0 on CPU SKUs — use `resources.cpu` there). |
 | `resources.gpuType` | e.g. `nvidia-h100-80gb`, `nvidia-h200-141gb`, `nvidia-b200-180gb`. Sometimes omits VRAM (`nvidia-b200`) — see the VRAM table. |
 | `resources.memoryMb`, `resources.cpu`, `resources.storageGb` | Host RAM / vCPU / attached disk. Occasionally wrong (AWS `lit-h200x-8` reports `141000000` MB) — sanity-check before quoting RAM. |
@@ -106,26 +108,33 @@ The `--machine` / `Machine.<NAME>` values used by `lightning-jobs`, `lightning-s
 
 | `--machine` | `slugMultiCloud` | | `--machine` | `slugMultiCloud` |
 |---|---|---|---|---|
-| `CPU_SMALL` | `cpu-2` | | `A100_40GB_X_8` | `lit-a100-40gb-8` |
-| `CPU` | `cpu-4` | | `A100_80GB_X_8` | `lit-a100-80gb-8` |
-| `CPU_X_8` / `CPU_X_16` | `cpu-8` / `cpu-16` | | `H100` … `H100_X_8` | `lit-h100-80gb-1` … `-8` |
-| `DATA_PREP` | `data-prep-mid` | | `H200` / `H200_X_8` | **varies by cloud — look it up** |
-| `T4` / `L4` / `L40S` (`_X_N`) | `lit-t4-N` / `lit-l4-N` / `lit-l40s-N` | | `B200_X_8` | `lit-b200x-8` |
+| `CPU_SMALL` | `cpu-2` | | `A100` … `A100_X_8` | `lit-a100-40gb-N` or `lit-a100-80gb-N` (by cloud) |
+| `CPU` | `cpu-4` | | `H100` … `H100_X_8` | `lit-h100-80gb-1` … `-8` |
+| `CPU_X_8` / `CPU_X_16` | `cpu-8` / `cpu-16` | | `H200` … `H200_X_8` | **varies by cloud — look it up** |
+| `DATA_PREP` / `_MAX` / `_ULTRA` | `data-prep-mid` / `-max-large` / `-ultra-extra-large` | | `B200` / `B200_X_8` | **varies by cloud — look it up** |
+| `T4` / `L4` / `L40S` (`_X_N`) | `lit-t4-N` / `lit-l4-N` / `lit-l40s-N` | | `RTXP_6000` (`_X_N`) | look it up (family `RTXP`) |
+
+`A100_40GB*` / `A100_80GB*` pin the memory size but are hidden from CLI `--machine` (the CLI
+rejects them); they work only as `Machine.A100_80GB_X_8` in Python or with `studio switch`.
+`T4_SMALL` also exists.
 
 Add `--cloud <cluster-id>` (e.g. `--cloud lightning-baremetal`) to pin the cloud you priced;
 without it the job lands on the teamspace default and may bill a different rate.
 
 **The same `--machine` value maps to different slugs on different clouds, so never hardcode one.**
-H200 is `lit-h200x-1` on Nebius but `lit-h200-141gb-1` on Lightning Cloud. Resolve it live:
+H200 is `lit-h200x-1` on Nebius but `lit-h200-141gb-1` on Lightning Cloud, and B200 has shown up as
+`lit-b200x-8`, `lit-b200-180gb-8` and `lit-b200-8`. The SDK (2026.9.18+) treats all of these as the
+same `H200*` / `B200*` machine (canonical `lit-h200-N` / `lit-b200-N`), but the catalog may still
+return any of them. Resolve it live:
 
 ```bash
 # every SKU on Lightning Cloud whose name mentions the accelerator you want
 curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=MACHINE" \
-| jq -r '.accelerator[] | select((.name + .slugMultiCloud) | test("h200"; "i"))
-         | [.slugMultiCloud, .name, .cost, .availableInSeconds] | @tsv'
+| jq -r '.accelerator[] | select((.displayName + .family + .slugMultiCloud) | test("h200"; "i"))
+         | [.slugMultiCloud, .displayName, .cost, .availableInSeconds] | @tsv'
 ```
 
-Match on the accelerator *name* as well as the slug. Filtering on a slug you assumed makes a
+Match on the accelerator's display name and family as well as the slug (there is no `name` field; `null + string` in jq silently drops it). Filtering on a slug you assumed makes a
 machine that exists look unavailable — which is exactly how a run ended up queued 59 minutes for
 an H100 while an idle H200 sat in the same pool at the same price.
 
@@ -167,7 +176,7 @@ litprice() {
 # litcompare <slugMultiCloud> — same SKU priced across every cloud, cheapest first
 litcompare() {
   { printf 'CLOUD\tSLUG\tUSD/HR\tSPOT/HR\tWAIT_S\tSTATUS\n'
-    for p in MACHINE AWS GCP LAMBDA_LABS NEBIUS VOLTAGE_PARK; do
+    for p in MACHINE AWS GCP LAMBDA_LABS NEBIUS VOLTAGE_PARK VULTR; do
       _litfetch "$p" \
       | jq -r --arg p "$p" --arg s "$1" '.accelerator[] | select(.slugMultiCloud==$s)
           | [ $p, .slug, .cost,
@@ -353,15 +362,17 @@ lightning job inspect <job-name> --teamspace <owner>/<teamspace>
 ```
 
 `job.total_cost` gives the realized USD for a finished job (see the `lightning-jobs` skill), but
-**wait for it to settle** — see the Gotchas below. There is no working programmatic price lookup
-in the Python SDK: `Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant,
-so prices must come from the REST catalog above.
+**wait for it to settle** — see the Gotchas below. The `Machine.<NAME>` constants carry no prices
+(`.cost` and `.interruptible_cost` are `None`). With auth, `Teamspace("owner/teamspace").list_machines()`
+returns `Machine` objects with `cost`, `interruptible_cost`, `wait_time` and `provider` filled in
+from this same catalog, limited to machines in capacity on the teamspace's cloud accounts. For
+cross-cloud comparisons and quotes before login, use the REST catalog above.
 
 ## Gotchas
 
 - **`Machine.<NAME>.cost` and `.interruptible_cost` are `None` for every constant.** `.slug` is
-  populated, so the object looks hydrated and the `None` reads like a bug. There is no
-  programmatic price lookup — use the REST accelerator catalog and join as described above.
+  populated, so the object looks hydrated and the `None` reads like a bug. Prices come from the
+  REST accelerator catalog, or from `Teamspace(...).list_machines()` (needs auth), not the constants.
 - **`job.total_cost` is provisional when a job first reports terminal, and keeps climbing.** It is
   not flagged as incomplete. A job that settled at `$0.16257313` read `$0.15243042` the moment
   `job.wait()` returned, and rose for ~2.5 minutes before stabilising; another read exactly `0.0`
@@ -384,7 +395,9 @@ so prices must come from the REST catalog above.
   `min(cost, spotPrice)` and say which one you quoted.
 - **Unknown `cloudProvider` values silently return the AWS catalog.** `AZURE`, `KUBERNETES` and
   `TENSORDOCK` all echo AWS's 23 SKUs byte-for-byte — they are not real Azure prices. Only the
-  seven providers in the Cloud providers table are meaningful; anything else 400s or lies.
+  seven providers in the Cloud providers table have been checked. The API's provider enum also
+  lists `CUDO`, `MITHRIL`, `THUNDER_CAT`, `CLOUDFLARE`, `RAFAY`, `SLURM` and aggregate values;
+  before quoting from one, diff its response against the AWS catalog to rule out the echo.
 - **Never price from `cloudProvider=LIGHTNING` or `DGX`.** They return a single internal cluster
   entry with placeholder costs of `1` and `2`. The Lightning Cloud catalog is `MACHINE`.
 - **The SDK's `CloudProvider` enum says `LIGHTNING`, the pricing API says `MACHINE`** — same

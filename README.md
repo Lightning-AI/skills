@@ -64,7 +64,7 @@ cp -r $SKILLS ~/.claude/skills/
 ## Prerequisites
 
 - `uv` installed. Skills reuse an existing `lightning` CLI, or install one with `uv tool install lightning-sdk` (user-level, outside your project's env)
-- A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` + `LIGHTNING_USER_ID`
+- A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional)
 
 ## Conventions
 
