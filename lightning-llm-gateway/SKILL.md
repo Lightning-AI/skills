@@ -24,6 +24,7 @@ env, so no project venv is touched. If setup doesn't go cleanly:
 | `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
 | Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
 | Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Every call fails with `NameResolutionError` ("Failed to resolve 'lightning.ai'"), only inside an agent sandbox | The sandbox's network allowlist doesn't include Lightning. Ask the user to allow `lightning.ai` and `*.lightning.ai` for the sandbox (Claude Code: `/sandbox`); don't disable the sandbox. Anything you run in the background or poll with runs in the same sandbox and fails the same way, often silently |
 
 The `LLM` class is Python, so it needs `lightning_sdk` importable, which the CLI install doesn't
 provide. For a one-off script use `uv run --with lightning-sdk python script.py`; for code that

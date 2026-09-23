@@ -25,6 +25,7 @@ env, so no project venv is touched. If setup doesn't go cleanly:
 | `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
 | Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
 | Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Every call fails with `NameResolutionError` ("Failed to resolve 'lightning.ai'"), only inside an agent sandbox | The sandbox's network allowlist doesn't include Lightning. Ask the user to allow `lightning.ai` and `*.lightning.ai` for the sandbox (Claude Code: `/sandbox`); don't disable the sandbox. Anything you run in the background or poll with runs in the same sandbox and fails the same way, often silently |
 
 Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
 one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
@@ -199,8 +200,38 @@ point, not a closed set. To see what a teamspace can actually launch, list them 
 `lightning machine list` rather than inventing a catalog endpoint — `/v1/accelerators`,
 `/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all return `code: 5`. For
 per-hour prices and cloud-specific SKU slugs the live source is
-`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works); the
+`lightning api "/v1/core/accelerators?cloudProvider=<PROVIDER>"`. It needs no auth, so plain
+`curl` works too, but agent permission rules often block `curl` while allowing `lightning`. The
 `lightning-cost-estimation` skill has the provider values and the costing recipes.
+
+**Pick the cloud for a GPU job before launching.** The default cloud doesn't sell every GPU at
+every count: on AWS an H200 exists only as an 8-GPU machine. Studios given such a `--machine`
+have silently come up on CPU (see `lightning-studios`), so don't assume a job fails loudly
+instead. Find a cloud that sells the machine at the count you want, then pass
+`--cloud <cluster-id>`. The provider → cluster-id table is in `lightning-cost-estimation`
+(*Cloud providers*):
+
+```bash
+lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
+  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .availableInSeconds, .outOfCapacity] | @tsv'
+lightning job run --name my-job --teamspace owner/teamspace --machine H200 --cloud lightning-baremetal \
+  --image python:3.12-slim --command "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
+```
+
+### The first minute after launch
+
+Most job failures happen in the first seconds: a wrong machine, a missing package, a renamed
+argument. Once the job is `Running`, read its log before settling in to wait, and stop it at
+the first traceback instead of letting it sit:
+
+```bash
+lightning job logs my-job --teamspace owner/teamspace --tail 40   # confirm the GPU line and the first steps
+lightning job stop my-job --teamspace owner/teamspace             # only if the log shows a crash or the wrong machine
+```
+
+Put a hardware check first in the job's own command, e.g.
+`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python train.py`. The first log
+line then tells you what you actually got.
 
 ## Example workflows
 
@@ -292,6 +323,8 @@ inspect <name>`, `lightning job logs <name>`, `lightning mmt list`.
 ## Gotchas
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
+- **Prefer a job to a Studio for one-shot runs** (train, eval, batch). A job stops billing when its command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone notices.
+- **Treat a silent monitor as a failure, not as "still running".** A poller that only matches progress lines, or that runs somewhere unable to reach lightning.ai (a sandboxed background command), reports nothing through a crash. Poll `job.status` or the job list with a deadline, react to `Failed`/`Stopped` as well as `Completed`, match crash signatures (`Traceback`, `Error`, `Killed`, `CUDA out of memory`) in logs, and check that the poller prints its first line before relying on it.
 - **`lightning job delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it the command reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**. The job stays listed and keeps costing money, and the failure is easy to miss in a log.
 - **`--query`, `--severity` and `--timestamps` can silently do nothing on a *finished* job.** Where a job's logs are stored decides this, and you cannot tell from the outside: if its lines aren't in the newer log storage, a finished job falls back to its saved log file, and that path ignores all three flags. `--query <term>` and `--severity <level>` then return **zero lines** for every value while the same command unfiltered returns the full log, and `--timestamps` output is byte-for-byte identical to plain output. Nothing warns you, so an empty result is indistinguishable from "no matches". **Don't trust a filtered read of a finished job** — fetch unfiltered and filter locally (`grep`). While a job is still `Running` the flags are applied server-side and work.
 - **`job inspect` does not emit parseable JSON.** It pretty-prints to terminal width and hard-wraps long values — notably `command` — inserting raw newlines inside JSON strings, so `jq` fails with `Invalid string: control characters from U+0000 through U+001F must be escaped`. Don't build a polling loop on `job inspect | jq`; use `lightning api "/v1/projects/$PID/jobs"` and filter with `-q`, or `job logs --json`.

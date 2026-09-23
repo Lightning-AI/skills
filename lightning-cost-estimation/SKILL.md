@@ -24,7 +24,9 @@ before login:
 curl -s "https://lightning.ai/v1/core/accelerators?cloudProvider=MACHINE" | jq '.accelerator | length'
 ```
 
-The same call through the CLI (query string goes in the path, quoted):
+The same call through the CLI (query string goes in the path, quoted). It returns identical JSON,
+so use it when an agent's permission rules block `curl` but allow `lightning`. Every `curl`
+recipe below works with `lightning api "<path>"` in its place:
 
 ```bash
 command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
@@ -45,6 +47,7 @@ env, so no project venv is touched. If setup doesn't go cleanly:
 | `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
 | Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
 | Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Every call fails with `NameResolutionError` ("Failed to resolve 'lightning.ai'"), only inside an agent sandbox | The sandbox's network allowlist doesn't include Lightning. Ask the user to allow `lightning.ai` and `*.lightning.ai` for the sandbox (Claude Code: `/sandbox`); don't disable the sandbox. Anything you run in the background or poll with runs in the same sandbox and fails the same way, often silently |
 
 ## Resolving org and teamspace (only for availability checks)
 
