@@ -15,6 +15,33 @@ lightning login                     # browser flow; or headless:
 export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...   # both required
 ```
 
+### First run: no CLI or account yet
+
+The user may never have heard of Lightning and may not have asked for it by name. Say in one line
+that the job would run on Lightning AI and why (e.g. "no GPU here"), then set up for them instead
+of stopping at the first error:
+
+```bash
+command -v lightning || uv tool install lightning-sdk || pip install -U lightning-sdk
+lightning auth whoami || echo "not signed in"
+```
+
+If nobody is signed in, choose the path that fits the machine:
+
+- **Has a browser (a laptop):** run `lightning login`. It opens lightning.ai, where a new user can
+  create a free account. The command returns once the browser sign-in completes, so give it a few
+  minutes and tell the user a tab is opening.
+- **No browser (Claude Code cloud session, CI, remote box):** ask the user to sign up at
+  lightning.ai, then copy `LIGHTNING_USER_ID` and `LIGHTNING_API_KEY` from their avatar →
+  **Global Settings → Keys → Login via CLI**. They go in as environment variables where the agent
+  runs. **Never ask for the key in chat.** In a Claude Code cloud session, both values belong in
+  the cloud environment's **Environment variables**. The same dialog's **Network access** must be
+  **Custom**, allowing `lightning.ai` and `*.lightning.ai` with the default list kept. Both
+  changes take effect in a **new** session only.
+
+Then continue with *Resolving org and teamspace*. A new account has one teamspace, so there's
+nothing to ask.
+
 If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
 CLI is running — refresh with `uvx --refresh lightning-sdk` (or
 `pip install -U lightning-sdk` for a persistent install).
