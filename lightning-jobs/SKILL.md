@@ -10,26 +10,31 @@ A Job runs a command on a dedicated cloud machine and terminates when done. Two 
 ## Setup & auth
 
 ```bash
-command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                     # browser flow; or headless:
 export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # USER_ID optional: with it Basic auth, without it the key is a Bearer token
 ```
 
-Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
-env, so no project venv is touched. If setup doesn't go cleanly:
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
-| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
-| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
-Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
-one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
-user's project, ask, then add `lightning-sdk` as a dependency with the project's own tool
-(`uv add`, `poetry add`, `pip install`).
+The install above also makes `lightning_sdk` importable in that env, so Python snippets run with
+its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-off scripts with
+`uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
+then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
 ## Resolving org and teamspace (do this first)
 
@@ -41,12 +46,13 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
-**From a scoped API key** (an agent, no user to ask): the key has exactly one membership. `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`):
+**From a scoped API key** (an agent, no user to ask): `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`). **Select the `organization` entry rather than `.memberships[0]`**: the same teamspace is commonly listed twice, once with `ownerType: organization` and once with `ownerType: user` (identical `projectId` and `name`), so index 0 is a coin flip and the `user` row's `ownerId` will not resolve against `/v1/orgs`.
 
 ```bash
 M=$(lightning api /v1/memberships)
-TS=$(echo "$M" | jq -r '.memberships[0].name')                                                  # teamspace
-OWNER=$(lightning api "/v1/orgs/$(echo "$M" | jq -r '.memberships[0].ownerId')" | jq -r .name)   # owner (org) slug
+ROW=$(echo "$M" | jq -c '[.memberships[] | select(.ownerType=="organization")][0] // .memberships[0]')
+TS=$(echo "$ROW" | jq -r .name)                                                        # teamspace
+OWNER=$(lightning api "/v1/orgs/$(echo "$ROW" | jq -r .ownerId)" | jq -r .name)         # owner (org) slug
 lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
 ```
 
@@ -276,7 +282,7 @@ add `-F limit=…` without `-X GET`: `lightning api` sends any request with `-f`
 Gotchas). Slice client-side with `-q`.**
 
 ```bash
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[] | select(.name=="<teamspace>") | .projectId' | head -1)
 
 # list jobs (id + name) — plain GET, no -F
 lightning api "/v1/projects/${PROJECT_ID}/jobs" -q '.jobs[] | [.id, .name] | @tsv'
@@ -289,9 +295,9 @@ lightning api "/v1/projects/${PROJECT_ID}/multi-machine-jobs" -q '.multiMachineJ
 ```
 
 `JOB_ID` is the `job_...` id from the list call (these endpoints 404 on the human name).
-To find one job by name, filter the list, or call `GET "/v1/projects/${PROJECT_ID}/jobs/find?name=<name>"`
-with the name in the query string (the route the SDK uses; `-f name=…` without `-X GET` would
-send a POST). For everyday use prefer the CLI: `lightning job list --json`, `lightning job
+To find one job by name, **filter the list**. The `/jobs/find` route returned `501 Not
+Implemented` when last tested live. The SDK's `Job("<name>")` calls it as
+`GET .../jobs/find?name=<name>`, which may be what works, but that form is untested here. For everyday use prefer the CLI: `lightning job list --json`, `lightning job
 inspect <name>`, `lightning job logs <name>`.
 
 ## Gotchas
@@ -303,12 +309,12 @@ inspect <name>`, `lightning job logs <name>`.
 - **`job inspect` has no exit code or failure message** — it returns `command`, `image`, `machine`, `name`, `status`, `studio`, `tags`, `teamspace` and `total_cost`. Start/stop times are on `job list --json` and `Job.started_at`/`Job.stopped_at`. To find out *why* a job failed, read the raw record's `message` field: `lightning api "/v1/projects/$PID/jobs" -q '.jobs[] | select(.name=="<name>") | .message'`.
 - Logs read while a job runs, not just after: `lightning job logs <name> --follow` streams live, and `print(job.logs)` returns a snapshot of what's available so far. While a job is still `Pending` (no machine scheduled yet) there may be nothing to show.
 - `lightning job ssh` only works while the target is **Running** — Pending/Completed/Failed/Stopped raise a clean error. For multi-machine jobs pass `--rank N` (defaults to 0).
-- On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` without `-X GET` — fields with no `-X` make `lightning api` send a POST, and the server 400s with `"spec is required"` (jobs) / `"name is required"` (multi-machine). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name; to look one up by name use `GET .../jobs/find?name=<name>` with the name in the query string.
+- On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` without `-X GET` — fields with no `-X` make `lightning api` send a POST, and the server 400s with `"spec is required"` (jobs) / `"name is required"` (multi-machine). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name; to look one up by name, filter the list (`/jobs/find` returned `501` when last tested).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
 - Omitting **both** `--studio` and `--image` (Python: leaving both `studio=` and `image=` unset) does not error — it defaults to the Studio you're currently running inside, resolved via the `LIGHTNING_CLOUD_SPACE_ID` env var, as long as that Studio's teamspace matches the resolved `--teamspace`. Useful for "run this script from my current Studio" without looking up the Studio's name first. If you're not running inside a Studio (or the teamspace doesn't match), omitting both raises an error asking for one explicitly.
 - Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
 - Job names are unique per teamspace: if the name is taken, the platform creates the job under a new name and the SDK warns `the job was created as '<new>' instead` — read `job.name` back rather than assuming. Omitted `--name` auto-generates one.
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
-- `job run` has no `--org` flag any more (it errors with `No such option`); pass the owner in `--teamspace owner/teamspace`, which works headlessly with env-var auth.
+- `--org`/`--user` on `job run` are deprecated (the CLI prints a deprecation warning and will remove them) in favour of the combined `--teamspace owner/teamspace` form, which works headlessly with env-var auth. They still work today, so an existing command using them doesn't need rewriting to run.
 - Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.

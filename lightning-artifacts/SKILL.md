@@ -20,7 +20,11 @@ Python, no SDK code, not even a `curl`.
 ## Setup & auth
 
 ```bash
-command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                       # interactive browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=...    # non-interactive alternative (CI, agents)
 ```
@@ -31,16 +35,17 @@ extra auth steps. Get a key from lightning.ai → user/org settings, or
 key** — read it from the environment. To target a non-prod control plane, set
 `LIGHTNING_CLOUD_URL` (default `https://lightning.ai`).
 
-Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
-env, so no project venv is touched. If setup doesn't go cleanly:
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
-| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
-| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
 typed field, `-H` header, `--input <file>` request body (`--input -` to pipe
@@ -66,9 +71,19 @@ only carries the owner's id, and the lookup depends on `ownerType`:
 ```bash
 PID=<projectId-from-above>
 TSNAME=<name-from-above>
-OWNER=$(lightning api "/v1/orgs/<ownerId-from-above>" | jq -r .name)   # ownerType "organization"
-# ownerType "user" is a personal teamspace (usually yours): OWNER=$(lightning api /v1/auth/user | jq -r .username)
+OWNER_ID=<ownerId-from-above>
+if [ "<ownerType-from-above>" = organization ]; then
+  OWNER=$(lightning api "/v1/orgs/$OWNER_ID" | jq -r .name)
+else   # a personal teamspace: yours, or another user's you were added to
+  OWNER=$(lightning api /v1/users/search -X GET -f "query=$OWNER_ID" \
+    | jq -r --arg id "$OWNER_ID" '.users[] | select(.id==$id) | .username')
+fi
+[ -n "$OWNER" ] && [ "$OWNER" != null ] || echo "could not resolve the owner of $TSNAME — ask the user" >&2
 ```
+
+Search by id and match on `.id` exactly (the search is fuzzy); this is the lookup
+the SDK itself uses. Never fall back to your own username: a wrong owner in the
+`lit://` path uploads into a different teamspace.
 
 Teamspaces you can access through org-level permissions (rather than direct
 membership) don't appear in `/v1/memberships` — if the user names one you

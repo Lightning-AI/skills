@@ -10,25 +10,30 @@ A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default
 ## Setup & auth (sandbox-specific)
 
 ```bash
-command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 # `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
 ```
 
-Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
-env, so no project venv is touched. If setup doesn't go cleanly:
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
-| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
-| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
-Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
-one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
-user's project, ask, then add `lightning-sdk` as a dependency with the project's own tool
-(`uv add`, `poetry add`, `pip install`).
+The install above also makes `lightning_sdk` importable in that env, so Python snippets run with
+its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-off scripts with
+`uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
+then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
 **Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Sandboxes need an **org- or teamspace-scoped API key** in `LIGHTNING_SANDBOX_API_KEY`; a personal `lightning login` credential fails with *"Use a teamspace- or org-scoped API key (Members → API keys), not your personal login key."*
 

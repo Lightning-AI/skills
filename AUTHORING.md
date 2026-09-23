@@ -82,16 +82,22 @@ line and troubleshooting table. Copy them verbatim from an existing skill (e.g.
 `lightning-jobs`) and keep them identical across skills: each skill is
 installable on its own, so the text can't live in a shared file.
 
-- **Reuse, else install once:** `command -v lightning >/dev/null || uv tool install
-  lightning-sdk`. An existing install (a user's venv, pipx, `uv tool`) always wins,
-  and a fresh one lands in uv's own tool env, never in the user's project.
-- **Plain `lightning …` in every command after that.** Don't write `uvx
-  lightning-sdk …` in examples: it's the fallback for when installing is blocked,
-  and it lives in the table.
-- **Python is a separate dependency.** The CLI install doesn't make `lightning_sdk`
-  importable. Skills with Python snippets add the standard paragraph: `uv run
-  --with lightning-sdk` for one-off scripts, or ask and add it to the user's
-  project with the project's own tool.
+- **Prefer the CLI in the current env, install into it if needed.** Someone running
+  a coding agent in their dev environment is fine with it installing the tools it
+  needs there, so the block uses the env's `lightning` when it is a recent Lightning
+  AI CLI, and otherwise installs or upgrades `lightning-sdk` into that same env
+  (`uv pip install -U`, else `python3 -m pip install -U`).
+- **Check the version, not just the name.** `command -v lightning` also matches
+  PyTorch Lightning's CLI and old installs, so the block reads the
+  `Lightning CLI version …` line and compares it to a minimum. **Bump that minimum
+  (in every skill) when a skill starts relying on a newer CLI feature.**
+- **Plain `lightning …` in every command after that.** `uv tool install` and `uvx
+  lightning-sdk …` are fallbacks for when there is no usable env or installing is
+  blocked; they live in the table, not in examples.
+- **Python comes with it.** Installing into the env also makes `lightning_sdk`
+  importable there. Skills with Python snippets add the standard paragraph covering
+  the fallback case (`uv run --with lightning-sdk`) and declaring it as a project
+  dependency (ask first).
 
 ## Test a skill before committing it (required)
 
@@ -104,8 +110,8 @@ export LIGHTNING_CLOUD_URL=http://localhost:9800     # dev control plane, if tes
 export LIGHTNING_API_KEY=<key>
 export LIGHTNING_USER_ID=<user-id>                   # optional
 
-command -v lightning >/dev/null || uv tool install lightning-sdk
-lightning --version                                  # CLI is reachable
+uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk   # test against the latest release
+lightning --version                                  # must print "Lightning CLI version <latest>"
 lightning api /v1/memberships -q '.memberships[] | [.name, .projectId] | @tsv'
 ```
 

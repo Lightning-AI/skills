@@ -27,21 +27,26 @@ Creating a blog post creates its lit page automatically. The public URL is
 ## Setup & auth
 
 ```bash
-command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                        # browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # non-interactive (CI, agents)
 ```
 
-Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
-env, so no project venv is touched. If setup doesn't go cleanly:
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
-| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
-| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` (the `gh api`-style raw client) is the whole interface here —
 there is no dedicated `lightning blog` command group. Flags: `-X` method,
@@ -344,16 +349,19 @@ width (≥1200 px reads well) and the file size.
 
 Images (both the social/list image and inline `image` blocks) are uploaded to
 the post's **lit page**. This endpoint is multipart, which `lightning api`
-doesn't do — use `curl` with basic auth (`user_id:api_key`). After a browser
-`lightning login` the pair lives in the credentials file, not in env vars, so
-fall back to it:
+doesn't do — use `curl` with the same credentials the CLI uses: basic auth
+(`user_id:api_key`) when a user id is set, the API key as a `Bearer` token when
+only the key is, and the credentials file after a browser `lightning login`:
 
 ```bash
-AUTH="${LIGHTNING_USER_ID:+$LIGHTNING_USER_ID:$LIGHTNING_API_KEY}"
-AUTH="${AUTH:-$(jq -r '"\(.user_id):\(.api_key)"' "${LIGHTNING_CREDENTIAL_PATH:-$HOME/.lightning/credentials.json}")}"
-UPLOAD_URL=$(curl -s -u "$AUTH" \
+if [ -n "${LIGHTNING_USER_ID:-}" ]; then AUTH=(-u "$LIGHTNING_USER_ID:$LIGHTNING_API_KEY")
+elif [ -n "${LIGHTNING_API_KEY:-}" ]; then AUTH=(-H "Authorization: Bearer $LIGHTNING_API_KEY")
+else AUTH=(-u "$(jq -r '"\(.user_id):\(.api_key)"' "${LIGHTNING_CREDENTIAL_PATH:-$HOME/.lightning/credentials.json}")")
+fi
+UPLOAD_URL=$(curl -sf "${AUTH[@]}" \
   -F "file=@./diagram.png" \
-  "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/media/lit_page/$PAGE_ID/image" | jq -r .url)
+  "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/media/lit_page/$PAGE_ID/image" | jq -er .url) \
+  || echo "image upload failed — check auth and PAGE_ID before using UPLOAD_URL" >&2
 # → https://storage.googleapis.com/lightning-avatars/litpages/<page-id>/<uuid>.png
 ```
 

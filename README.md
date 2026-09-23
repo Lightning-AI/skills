@@ -7,7 +7,7 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | Skill | What it covers |
 |---|---|
 | [`lightning-studios`](lightning-studios/SKILL.md) | Create, start, stop and manage cloud GPU Studios; switch machines, run commands, transfer files, SSH |
-| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, SSH into running jobs/MMTs, collect artifacts |
+| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, SSH into running jobs or multi-machine workers, collect artifacts |
 | [`lightning-deployments`](lightning-deployments/SKILL.md) | Deploy containers/APIs with autoscaling, manage releases, endpoints and auth |
 | [`lightning-sandboxes`](lightning-sandboxes/SKILL.md) | Fast ephemeral VMs for safe code execution: run commands, background processes, file I/O, Docker (`docker` / `docker compose`) and public port URLs |
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
@@ -63,7 +63,7 @@ cp -r $SKILLS ~/.claude/skills/
 
 ## Prerequisites
 
-- `uv` installed. Skills reuse an existing `lightning` CLI, or install one with `uv tool install lightning-sdk` (user-level, outside your project's env)
+- Python with `uv` or `pip`. Skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
 - A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional)
 
 ## Conventions

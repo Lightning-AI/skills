@@ -10,28 +10,33 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ## Setup & auth
 
 ```bash
-command -v lightning >/dev/null || uv tool install lightning-sdk   # reuse any existing CLI, else install once
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                     # browser flow; or set env vars for headless use:
 export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # USER_ID optional: with it Basic auth, without it the key is a Bearer token
 ```
 
-Then call plain `lightning …` everywhere. `uv tool install` puts the CLI in its own
-env, so no project venv is touched. If setup doesn't go cleanly:
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| `uv: command not found` | `pipx install lightning-sdk`, or [install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-| `lightning: command not found` right after installing | uv's bin dir (`uv tool dir --bin`, usually `~/.local/bin`) isn't on `PATH`: call the CLI by full path, or run `uv tool update-shell` for new shells |
-| `No such command '…'` | The CLI is too old: `uv tool upgrade lightning-sdk`, or `pip install -U lightning-sdk` in whatever venv `command -v lightning` points into |
-| Install blocked (read-only home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 Credentials are stored in `~/.lightning/credentials.json`.
 
-Python snippets need `lightning_sdk` importable, which the CLI install doesn't provide. For a
-one-off script use `uv run --with lightning-sdk python script.py`; for code that stays in the
-user's project, ask, then add `lightning-sdk` as a dependency with the project's own tool
-(`uv add`, `poetry add`, `pip install`).
+The install above also makes `lightning_sdk` importable in that env, so Python snippets run with
+its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-off scripts with
+`uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
+then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
 ## Resolving org and teamspace (do this first)
 
@@ -47,12 +52,13 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the user's choice so they aren't asked again: `lightning config set teamspace <owner>/<teamspace>`.
 
-**From a scoped API key** (an agent, no user to ask): the key has exactly one membership. `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`):
+**From a scoped API key** (an agent, no user to ask): `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`). **Select the `organization` entry rather than `.memberships[0]`**: the same teamspace is commonly listed twice, once with `ownerType: organization` and once with `ownerType: user` (identical `projectId` and `name`), so index 0 is a coin flip and the `user` row's `ownerId` will not resolve against `/v1/orgs`.
 
 ```bash
 M=$(lightning api /v1/memberships)
-TS=$(echo "$M" | jq -r '.memberships[0].name')                                                  # teamspace
-OWNER=$(lightning api "/v1/orgs/$(echo "$M" | jq -r '.memberships[0].ownerId')" | jq -r .name)   # owner (org) slug
+ROW=$(echo "$M" | jq -c '[.memberships[] | select(.ownerType=="organization")][0] // .memberships[0]')
+TS=$(echo "$ROW" | jq -r .name)                                                        # teamspace
+OWNER=$(lightning api "/v1/orgs/$(echo "$ROW" | jq -r .ownerId)" | jq -r .name)         # owner (org) slug
 lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
 ```
 
@@ -183,7 +189,7 @@ For anything the CLI doesn't wrap, `lightning api <path>` makes an authenticated
 
 ```bash
 lightning api /v1/memberships -q '.memberships[].name'
-PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[0].projectId')
+PROJECT_ID=$(lightning api /v1/memberships | jq -r '.memberships[] | select(.name=="<teamspace>") | .projectId' | head -1)
 # studios are "cloudspaces" in the API — one word, and call it BARE (see Gotchas)
 lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 ```
