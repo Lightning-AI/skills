@@ -185,14 +185,21 @@ lightning studio start --name exp-1 --teamspace my-org/my-teamspace --machine CP
 lightning cp -r ./src lit://my-org/my-teamspace/studios/exp-1/src/     # contents land in ~/src
 ```
 ```python
+import time
 from lightning_sdk import Machine, Studio
 studio = Studio("exp-1", teamspace="my-org/my-teamspace")
 studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
 studio.switch_machine(Machine.H200)
-out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
-assert code == 0, "no GPU: stop this Studio and pick another cloud"
-studio.run_and_detach("cd ~/src && nohup python train.py > train.log 2>&1", timeout=30)
+out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
+gpus = out.splitlines() if code == 0 else []
+print(gpus)                                                   # e.g. ['NVIDIA H200']
+assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: stop this Studio and pick another cloud"
+# train.exit gets the exit code when training ends, so completion is checkable
+studio.run_and_detach("cd ~/src && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
 print(studio.run("tail -n 40 ~/src/train.log"))              # within the first minute: crashes show up in seconds
+while studio.run_with_exit_code("test -f ~/src/train.exit")[1] != 0:
+    time.sleep(60)
+assert studio.run("cat ~/src/train.exit") == "0", studio.run("tail -n 40 ~/src/train.log")
 ```
 ```bash
 lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
