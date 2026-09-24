@@ -1,6 +1,6 @@
 ---
 name: lightning-blog
-description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (uvx lightning-sdk) - create a draft, import a Markdown file with the bundled md2blocks.py converter, write the body as EditorJS blocks, turn SVG charts and diagrams into dark-mode PNGs and upload them, set title/description/slug/category/author/social image/published date, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, chart, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this markdown/writeup into a blog post", "add a chart to the blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
+description: Write, edit, illustrate and publish posts on the Lightning AI blog (lightning.ai/blog) through the `lightning` CLI (from the `lightning-sdk` package) - create a draft, import a Markdown file with the bundled md2blocks.py converter, write the body as EditorJS blocks, turn SVG charts and diagrams into dark-mode PNGs and upload them, set title/description/slug/category/author/social image/published date, share a review link while still unpublished, then publish or unpublish. Requires the internal blog-admin flag on your Lightning account. Use when the user wants to draft, update, illustrate, chart, review, publish, unpublish, list, find or delete a lightning.ai blog post, asks to "post this on the Lightning blog", "turn this markdown/writeup into a blog post", "add a chart to the blog post", "fix the blog post title/slug/author", or "show me the blog drafts". Always confirm with the user before publishing (making a post non-draft).
 ---
 
 # Lightning AI blog (author, edit and publish lightning.ai/blog posts)
@@ -27,21 +27,35 @@ Creating a blog post creates its lit page automatically. The public URL is
 ## Setup & auth
 
 ```bash
-uvx lightning-sdk --version           # the CLI; no install needed (uvx runs it ad-hoc)
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                        # browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=... LIGHTNING_USER_ID=...   # non-interactive (CI, agents)
 ```
 
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+
 `lightning api` (the `gh api`-style raw client) is the whole interface here —
 there is no dedicated `lightning blog` command group. Flags: `-X` method,
 `-f key=val` string field, `-F key=val` typed field, `-H` header, `--input
-<file>` request body (`--input /dev/stdin` to pipe), `-q` jq filter (needs the
+<file>` request body (`--input -` to pipe), `-q` jq filter (needs the
 `jq` binary), `-i` include response headers, `--silent` suppress the body.
 `-q` has no raw mode (there is no `-q -r`) — it prints jq's JSON output, so
 pipe the response to `jq -r` whenever you need a bare string.
 
-If the installed `lightning` is older than the `api` subcommand
-(`Error: No such command 'api'`), call it through `uvx lightning-sdk api …`.
 Set `LIGHTNING_CLOUD_URL` to target a non-prod control plane (default
 `https://lightning.ai`).
 
@@ -157,7 +171,8 @@ lightning api "/v1/blog-posts/$POST_ID" -X PUT \
   -f 'description=…' -f 'category=build'
 
 # author: resolve the user id from an exact username or email first
-AUTHOR=$(lightning api /v1/users/search -X GET -f 'query=karolis' | jq -r '.users[0].id')
+AUTHOR=$(lightning api /v1/users/search -X GET -f 'query=karolis' \
+  | jq -r --arg u karolis '.users[] | select(.username==$u) | .id')   # search is fuzzy; never take .users[0]
 lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "authorId=$AUTHOR"
 
 # published date (what the post displays; falls back to createdAt)
@@ -210,7 +225,7 @@ jq -c --arg path "$SLUG" '{content:(.|tostring), path:$path, published:true}' \
   /tmp/post.json > /tmp/publish.json
 lightning api "/v1/lit-pages/$PAGE_ID" -X PUT --input /tmp/publish.json \
   -q '.LitPage | {path, published}'
-curl -s -o /dev/null -w 'anon GET: %{http_code}\n' "https://lightning.ai/v1/blog-posts/$SLUG"
+curl -s -o /dev/null -w 'anon GET: %{http_code}\n' "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/blog-posts/$SLUG"
 ```
 
 Unpublishing is the same call with `published:false` — that one is safe to do
@@ -334,13 +349,19 @@ width (≥1200 px reads well) and the file size.
 
 Images (both the social/list image and inline `image` blocks) are uploaded to
 the post's **lit page**. This endpoint is multipart, which `lightning api`
-doesn't do — use `curl` with basic auth (`user_id:api_key`, the same pair the
-CLI stores in `~/.lightning/credentials.json`):
+doesn't do — use `curl` with the same credentials the CLI uses: basic auth
+(`user_id:api_key`) when a user id is set, the API key as a `Bearer` token when
+only the key is, and the credentials file after a browser `lightning login`:
 
 ```bash
-UPLOAD_URL=$(curl -s -u "$LIGHTNING_USER_ID:$LIGHTNING_API_KEY" \
+if [ -n "${LIGHTNING_USER_ID:-}" ]; then AUTH=(-u "$LIGHTNING_USER_ID:$LIGHTNING_API_KEY")
+elif [ -n "${LIGHTNING_API_KEY:-}" ]; then AUTH=(-H "Authorization: Bearer $LIGHTNING_API_KEY")
+else AUTH=(-u "$(jq -r '"\(.user_id):\(.api_key)"' "${LIGHTNING_CREDENTIAL_PATH:-$HOME/.lightning/credentials.json}")")
+fi
+UPLOAD_URL=$(curl -sf "${AUTH[@]}" \
   -F "file=@./diagram.png" \
-  "https://lightning.ai/v1/media/lit_page/$PAGE_ID/image" | jq -r .url)
+  "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/media/lit_page/$PAGE_ID/image" | jq -er .url) \
+  || echo "image upload failed — check auth and PAGE_ID before using UPLOAD_URL" >&2
 # → https://storage.googleapis.com/lightning-avatars/litpages/<page-id>/<uuid>.png
 ```
 
