@@ -16,7 +16,8 @@ poller for RUN is alive hands the new job to that poller instead of starting a s
 meant as a Claude Code Monitor command. `statusline` draws one bar per run for the Claude
 Code status line and makes no network calls.
 
-State lives in $LIGHTNING_PROGRESS_DIR, default ./.lightning-progress (self-gitignored).
+State lives in $LIGHTNING_PROGRESS_DIR, default ~/.local/state/lightning-progress: one place
+per user, so the poller, the Monitor and the status line agree whatever directory each runs in.
 Only `watch` needs lightning_sdk; everything else is standard library.
 """
 
@@ -55,7 +56,7 @@ TQDM_RE = re.compile(r"(\d{1,3})%\|[^|]*\|\s*(\d+)/(\d+)")
 EPOCH_RE = re.compile(r"\bEpoch\s+(\d+)")
 TQDM_SKIP_RE = re.compile(r"Validat|Sanity|Testing|Predict", re.I)
 EXIT_RE = re.compile(r"\bPROGRESS_EXIT\s+(-?\d+)")
-STAGE_RE = re.compile(r"\bPROGRESS_PHASE\s+(\S+)")
+STAGE_RE = re.compile(r"\bPROGRESS_PHASE\s+(\S+)(?:\s+(\d+)\s*/\s*(\d+))?")
 # warnings that mention an error word, e.g. PyTorch's `[W924 14:51:32 CUDACachingAllocator.cpp] ... OOM`
 WARN_RE = re.compile(r"^\s*\[?[WI]\d{3,4}\s|\b\w*Warning\b|^\s*\[?(WARNING|WARN|INFO)\b", re.I)
 PROGRESS_KEYS = ("step", "total", "epoch", "source", "peak", "peak_epoch", "milestone")
@@ -171,6 +172,8 @@ def new_state(run: str) -> Dict[str, Any]:
         "pending_note": None,
         "stage": None,
         "stage_since": None,
+        "stage_index": None,
+        "stage_count": None,
         "stages": [],
         "stage_snap": {},
         "job_running_since": None,
@@ -225,7 +228,7 @@ def on_line(s: Dict[str, Any], job: str, text: str, wall_now: float, dedupe: boo
         s["last_error"], s["last_error_at"] = err, at
     m = STAGE_RE.search(message)
     if m:
-        return on_stage(s, m.group(1), at)
+        return on_stage(s, m.group(1), at, *(int(g) if g else None for g in m.group(2, 3)))
     reading = parse_progress(message)
     if reading is None:
         return []
@@ -242,10 +245,23 @@ def stage_summary(s: Dict[str, Any], until: float) -> str:
     return ", ".join(parts)
 
 
-def on_stage(s: Dict[str, Any], name: str, at: float) -> List[Dict[str, Any]]:
+def close_stage(s: Dict[str, Any], at: float) -> None:
+    """End the current stage without starting another, e.g. when an attempt ends."""
+    if s["stage"] is not None:
+        s["stage_snap"][s["stage"]] = {k: s[k] for k in PROGRESS_KEYS}
+        s["stage"] = None
+    if s["stages"] and s["stages"][-1]["end"] is None:
+        s["stages"][-1]["end"] = at
+
+
+def on_stage(s: Dict[str, Any], name: str, at: float,
+             index: Optional[int] = None, count: Optional[int] = None) -> List[Dict[str, Any]]:
     """Switch to a named stage. Each stage keeps its own bar; re-entering one resumes its bar,
-    so a relaunched attempt that trains again is compared with the old training progress."""
+    so a relaunched attempt that trains again is compared with the old training progress.
+    `PROGRESS_PHASE eval 3/4` also gives the stage's place in the job, for a whole-job bar."""
     cur = s["stage"]
+    if count:
+        s["stage_index"], s["stage_count"] = index, count
     if name == cur:
         return []
     if cur is not None:
@@ -446,6 +462,20 @@ def finish(s: Dict[str, Any], phase: str, now: float) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------------- statusline
 
 
+def stage_track(s: Dict[str, Any], now: float, keep: int = 3) -> str:
+    """`setup ✔ 1m05s · train ✔ 9m40s · ▸ eval_ft 4m32s`: the last few stages and the current one."""
+    stages = s.get("stages") or []
+    parts = []
+    for st in stages[-(keep + 1):]:
+        if st["end"] is None:
+            parts.append(f"▸ {st['name']} {fmt_duration(now - st['start'])}")
+        else:
+            parts.append(f"{st['name']} ✔ {fmt_duration(st['end'] - st['start'])}")
+    if len(stages) > keep + 1:
+        parts.insert(0, "…")
+    return " · ".join(parts)
+
+
 def render_line(s: Dict[str, Any], now: float) -> str:
     phase, run = s["phase"], s["run"]
     step, total = s["step"], s["total"]
@@ -453,7 +483,12 @@ def render_line(s: Dict[str, Any], now: float) -> str:
     icon = {"pending": "⏳", "starting": "▶", "running": "▶", "recovering": "⟳", "stalled": "⚠",
             "waiting": "✖", "done": "✔", "failed": "✖", "stopped": "■", "abandoned": "✖"}.get(phase, "?")
     stage = s.get("stage")
-    head = f"{icon} {run}" + (f" [{stage}]" if stage and phase not in FINAL_PHASES else "")
+    live = phase not in FINAL_PHASES
+    stage_only = bool(stage) and not total and phase in ("starting", "running", "recovering")
+    head = f"{icon} {run}" + (f" [{stage}]" if stage and live and not stage_only else "")
+    if stage_only and s.get("stage_count"):
+        done = max(0, min((s.get("stage_index") or 1) - 1, s["stage_count"]))
+        head += f"  {bar(done, done, s['stage_count'])}  stage {s.get('stage_index')}/{s['stage_count']}"
     if total:
         head += f"  {bar(step or 0, peak or step or 0, total)}  {pct(step, total):3d}%"
         if s["epoch"] is not None:
@@ -464,6 +499,8 @@ def render_line(s: Dict[str, Any], now: float) -> str:
     cause = s["last_error"]
     if phase == "pending":
         tail = f"{s.get('pending_note') or 'waiting for machine'} · {since(s['pending_since'])}"
+    elif stage_only:
+        tail = stage_track(s, now)
     elif phase == "starting" or (phase in ("running", "recovering") and not total):
         tail = f"{stage or 'starting'} · {since(s.get('stage_since') or s['started_at'])}"
     elif phase in ("running", "recovering") and step is not None and step >= total:
@@ -495,17 +532,22 @@ def render_line(s: Dict[str, Any], now: float) -> str:
 # ------------------------------------------------------------------------------------- storage
 
 
-def progress_dir(project_dir: Optional[str] = None) -> Path:
+def progress_dir() -> Path:
     env = os.environ.get("LIGHTNING_PROGRESS_DIR")
-    return Path(env) if env else Path(project_dir or os.getcwd()) / ".lightning-progress"
+    if env:
+        return Path(env)
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(Path.home(), ".local", "state")
+    return Path(base) / "lightning-progress"
 
 
 def ensure_dirs(d: Path) -> None:
     (d / "state").mkdir(parents=True, exist_ok=True)
     (d / "runs").mkdir(parents=True, exist_ok=True)
-    ignore = d / ".gitignore"
-    if not ignore.exists():
-        ignore.write_text("*\n")
+
+
+def session_dir() -> str:
+    """The directory Claude Code runs in, whose .claude/ settings the session reads."""
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 def write_json(path: Path, data: Dict[str, Any]) -> None:
@@ -692,7 +734,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
     runfile["pid"] = os.getpid()
     write_json(run_path, runfile)
-    hint = statusline_hint(run, os.getcwd())
+    hint = statusline_hint(run, session_dir())
     if hint:
         append_events(d, [_event("hint", run, hint, time.time())])
         print(f"{run}: {hint}", flush=True)
@@ -724,6 +766,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             if state["job"] and state["job"] != entry["name"]:
                 state["issue_since"] = state["issue_since"] or state["last_sample_at"]
                 state["job_running_since"] = None
+                close_stage(state, time.time())
             if state["phase"] == "waiting":
                 state["phase"] = "pending"
             state["job"] = entry["name"]
@@ -884,6 +927,7 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
         state["issue_since"] = state["issue_since"] or state["last_sample_at"] or now
         state["job_running_since"] = None
         state["phase"] = "pending"
+        close_stage(state, now)
         save([_event("relaunch", state["run"], f"{why}: new attempt", now)])
 
     while True:
@@ -1033,22 +1077,16 @@ def cmd_events(args: argparse.Namespace) -> int:
 
 def cmd_statusline(args: argparse.Namespace) -> int:
     if args.config:
-        project_dir = os.getcwd()
+        project_dir = session_dir()
         path, cmd = statusline_setting(project_dir)
         print(json.dumps(statusline_snippet(cmd), indent=2))
         print(f"# merge into {os.path.join(project_dir, SETTINGS_FILES[0])}"
               + (f"; replaces the status line set in {path}, and still runs it" if cmd and "progress.py" not in cmd
                  else "; already set up" if cmd else ""), file=sys.stderr)
         return 0
-    project_dir = None
     if not sys.stdin.isatty():
-        try:
-            info = json.loads(sys.stdin.read() or "{}")
-            ws = info.get("workspace") or {}
-            project_dir = ws.get("project_dir") or ws.get("current_dir") or info.get("cwd")
-        except ValueError:
-            pass
-    d = progress_dir(project_dir)
+        sys.stdin.read()  # Claude Code sends session JSON; the bars don't depend on it
+    d = progress_dir()
     now = time.time()
     states = [s for s in (read_json(p) for p in sorted((d / "state").glob("*.json"))) if s]
     visible = [s for s in states
@@ -1088,7 +1126,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     s = sub.add_parser("statusline", help="render progress bars for the Claude Code status line")
     s.add_argument("--config", action="store_true",
-                   help="print the statusLine setting to add (run from the project root)")
+                   help="print the statusLine setting to add (run from the directory Claude Code was started in)")
     s.set_defaults(fn=cmd_statusline)
 
     args = ap.parse_args(argv)
