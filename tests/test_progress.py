@@ -225,11 +225,23 @@ class LiveRunFindings(unittest.TestCase):
         self.assertIsNone(r.s["step"])
         r.tick("Running", T0 + 175 + 900)  # 15 quiet minutes of eval: not a stall
         self.assertNotIn("stall", r.kinds())
-        self.assertIn("[eval]", progress.render_line(r.s, T0 + 1075))
+        # the run keeps a line after its bar's stage ends, instead of shrinking to a name
+        self.assertIn("train ✔ 1m55s · ▸ eval 15m00s", progress.render_line(r.s, T0 + 1075))
         stages = [e["msg"] for e in r.events if e["kind"] == "stage"]
         self.assertEqual(stages[-1], "train-42: stage eval (train took 1m55s)")
         done = progress.finish(r.s, "done", T0 + 1200)
         self.assertIn("setup 59s, train 1m55s, eval 17m05s", done["msg"])
+
+    def test_counted_stages_draw_a_whole_job_bar(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup 1/4")
+        r.line(T0 + 60, "PROGRESS_PHASE train 2/4")
+        r.line(T0 + 61, "PROGRESS 5/10")
+        self.assertIn("[train]", progress.render_line(r.s, T0 + 62))   # the stage's own bar wins
+        r.line(T0 + 600, "PROGRESS_PHASE eval_ft 4/4")
+        line = progress.render_line(r.s, T0 + 700)
+        self.assertIn("▓" * 15 + "░" * 5 + "  stage 4/4", line)
+        self.assertIn("▸ eval_ft 1m40s", line)
 
     def test_relaunch_that_trains_again_is_compared_with_old_training(self):
         r = Run()
@@ -264,10 +276,46 @@ class LiveRunFindings(unittest.TestCase):
 
     def test_chained_statusline_runs_both(self):
         cmd = progress.statusline_snippet("echo theirs")["statusLine"]["command"]
-        d = tempfile.mkdtemp()
-        out = subprocess.run(["sh", "-c", cmd], input=f'{{"workspace":{{"project_dir":"{d}"}}}}',
-                             capture_output=True, text=True).stdout
+        env = dict(os.environ, LIGHTNING_PROGRESS_DIR=tempfile.mkdtemp())
+        out = subprocess.run(["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}',
+                             capture_output=True, text=True, env=env).stdout
         self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
+
+
+class Locations(unittest.TestCase):
+    def test_state_dir_does_not_depend_on_cwd(self):
+        old = {k: os.environ.pop(k, None) for k in ("LIGHTNING_PROGRESS_DIR", "XDG_STATE_HOME")}
+        cwd = os.getcwd()
+        try:
+            a = progress.progress_dir()
+            os.chdir(tempfile.mkdtemp())
+            self.assertEqual(progress.progress_dir(), a)
+            self.assertEqual(a, Path.home() / ".local" / "state" / "lightning-progress")
+        finally:
+            os.chdir(cwd)
+            for k, v in old.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_statusline_ignores_session_dir(self):
+        d = tempfile.mkdtemp()
+        env = dict(os.environ, LIGHTNING_PROGRESS_DIR=d)
+        progress.ensure_dirs(Path(d))
+        s = progress.new_state("r1")
+        s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
+        progress.write_json(Path(d) / "state" / "r1.json", s)
+        script = str(Path(progress.__file__))
+        out = subprocess.run([sys.executable, script, "statusline"], cwd=tempfile.mkdtemp(), env=env,
+                             input='{"workspace":{"project_dir":"/elsewhere"}}', capture_output=True, text=True)
+        self.assertIn("r1", out.stdout)
+
+    def test_relaunch_restarts_the_stage_clock(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup")
+        progress.close_stage(r.s, T0 + 100)          # attempt 1 ended
+        r.line(T0 + 200, "PROGRESS_PHASE setup")      # attempt 2 prints the same stage again
+        self.assertEqual(r.s["stage_since"], T0 + 200)
+        self.assertIn("stage setup again", r.events[-1]["msg"])
 
 
 class ScriptDone(BaseException):

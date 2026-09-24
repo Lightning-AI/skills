@@ -373,8 +373,8 @@ those lines into a status-line bar and chat events:
 
 ```
 job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
-                               ├─► .lightning-progress/state/<run>.json ─► status line (terminal)
-                               └─► .lightning-progress/events.jsonl ────► Monitor (terminal + desktop)
+                               ├─► ~/.local/state/lightning-progress/state/<run>.json ─► status line (terminal)
+                               └─► ~/.local/state/lightning-progress/events.jsonl ────► Monitor (terminal + desktop)
 ```
 
 **1. Make the job print progress.** When you write or edit the training script, add one line
@@ -393,12 +393,15 @@ print(f"PROGRESS {step}/{total_steps}", flush=True)   # optional: f"... attempt=
   a quiet stage isn't reported as a stall:
 
   ```bash
-  echo "PROGRESS_PHASE setup"; pip install ...
-  echo "PROGRESS_PHASE train"; python train.py      # its PROGRESS lines fill this stage's bar
-  echo "PROGRESS_PHASE eval";  python eval.py
+  echo "PROGRESS_PHASE setup 1/3"; pip install ...
+  echo "PROGRESS_PHASE train 2/3"; python train.py      # its PROGRESS lines fill this stage's bar
+  echo "PROGRESS_PHASE eval 3/3";  python eval.py
   ```
 
-  Each stage keeps its own bar, and the final event lists how long each stage took. A relaunch
+  Each stage keeps its own bar, and the final event lists how long each stage took. A stage that
+  prints no `PROGRESS` lines (evals rarely do: vLLM and lm-eval draw no bars without a terminal)
+  still gets a line: the stages so far and their times (`train ✔ 9m40s · ▸ eval 4m32s`). The
+  optional `i/n` adds a bar for the whole job (`▓▓▓▓▓░ stage 3/3`), so the run never loses its bar. A relaunch
   that enters `train` again is compared with the earlier training progress, so resuming from a
   checkpoint shows up as a setback.
 
@@ -406,8 +409,7 @@ tqdm bars are read as a fallback when a script has no `PROGRESS` line. They are 
 PyTorch Lightning's per-epoch bars only give progress within the epoch, and validation bars are
 ignored.
 
-**2. Start the poller** as a background Bash command from the project root. `<SKILL_DIR>` is this
-skill's directory:
+**2. Start the poller** as a background Bash command. `<SKILL_DIR>` is this skill's directory:
 
 ```bash
 python3 <SKILL_DIR>/progress.py watch train-run-42 --teamspace my-org/my-teamspace
@@ -424,7 +426,8 @@ python3 <SKILL_DIR>/progress.py watch train-run-42 --teamspace my-org/my-teamspa
   inside the sandbox.
 
 `watch` waits through `Pending`, follows the logs while the job runs, and exits once the run is
-final. State goes to `./.lightning-progress/`, which ignores itself in git.
+final. State goes to `~/.local/state/lightning-progress/` (override with `LIGHTNING_PROGRESS_DIR`),
+so it doesn't matter which directory `watch`, the Monitor or the status line runs in.
 
 **Work running in a Studio** has no job log stream, so point `watch` at the log file instead.
 Start the process so its last line records the exit code, then watch that file. Paths are
@@ -452,8 +455,10 @@ run ends. Report each setback or failure to the user when it lands, not just the
 
 **4. Always offer the status-line bar.** It is the only live, always-visible view: Monitor events
 arrive only at 10% steps. Right after starting `watch`, ask the user whether to add it, unless
-`watch` found it already set up. If it isn't, the Monitor's first event says so. On a yes, print
-the setting from the project root and merge it into `.claude/settings.local.json`:
+`watch` found it already set up. If it isn't, the Monitor's first event says so. Ask it as its own
+question with the ask-user tool, not as a line inside a status update, where it is easy to miss.
+On a yes, run this from the directory Claude Code was started in (not a parent or subfolder),
+and merge what it prints into that directory's `.claude/settings.local.json`:
 
 ```bash
 python3 <SKILL_DIR>/progress.py statusline --config
@@ -542,4 +547,4 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
 - **`job.logs(follow=True)` replays the job's saved lines each time it connects, and ignores `since` while a job runs.** Anything that follows logs across reconnects must drop lines it has already seen. `progress.py` requests `timestamps=True` and skips lines older than the last one it processed; without that, replayed early progress lines would look like a setback.
-- **A Monitor that polls Lightning directly fails inside Claude Code's sandbox**, because the SDK's and CLI's requests can't get out, and chains like `sleep 60; lightning …` get blocked too. Keep the network side in one unsandboxed `progress.py watch` and point the Monitor at `progress.py events`, which only reads `./.lightning-progress/events.jsonl`. The status line reads the same folder under the session's project directory, so start `watch` from the project root. If they must differ, set `LIGHTNING_PROGRESS_DIR` for both. `watch --query PROGRESS` cuts traffic for very chatty jobs, but it also hides error lines, so stalls lose their likely cause.
+- **A Monitor that polls Lightning directly fails inside Claude Code's sandbox**, because the SDK's and CLI's requests can't get out, and chains like `sleep 60; lightning …` get blocked too. Keep the network side in one unsandboxed `progress.py watch` and point the Monitor at `progress.py events`, which only reads `~/.local/state/lightning-progress/events.jsonl`. The status line reads the same folder. If you set `LIGHTNING_PROGRESS_DIR`, set it for all three. `watch --query PROGRESS` cuts traffic for very chatty jobs, but it also hides error lines, so stalls lose their likely cause.
