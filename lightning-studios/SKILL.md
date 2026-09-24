@@ -28,9 +28,9 @@ venv, a conda env, …). Then call plain `lightning …` everywhere. If setup do
 | `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
 | `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
 | The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
-| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …`. Both dirs must be writable: a sandboxed `uvx` also writes under `~/.local/share/uv/tools` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …` |
 | Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
-| Every call fails with `NameResolutionError` ("Failed to resolve 'lightning.ai'"), only inside an agent sandbox | Check which calls fail. **`lightning api` fails too:** the sandbox's network allowlist doesn't include Lightning, so ask the user to allow `lightning.ai` and `*.lightning.ai` (Claude Code: `/sandbox`). **`lightning api` works, but `studio`/`job` commands or Python SDK calls still fail:** those code paths bypass the sandbox's network proxy, and no allowlist fixes them. Ask the user to approve running just the Lightning commands outside the sandbox. Either way, anything you run in the background or poll with fails the same way, often silently |
+| Every call fails with `NameResolutionError`, only inside an agent sandbox | If `lightning api` fails too, ask the user to allow `lightning.ai` and `*.lightning.ai` (Claude Code: `/sandbox`). If only `studio`/`job` commands or the SDK fail, they bypass the sandbox's proxy and no allowlist helps: ask to run just those outside the sandbox. Background pollers fail the same way, silently |
 
 Credentials are stored in `~/.lightning/credentials.json`.
 
@@ -152,72 +152,47 @@ catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` a
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
-### Choose the cloud before the first GPU start
+### Launching on a GPU
 
 <!-- TODO: remove this workaround once the backend rejects a GPU request it can't fill instead of
 starting a CPU machine (Task Board: "CLI silently downgrades to CPU when a GPU SKU isn't available"). -->
 
-A Studio's cloud is fixed when it's created, and `studio switch` can't move it. The default cloud
-doesn't sell every GPU at every count: on AWS an H200 exists only as an 8-GPU machine. **When
-`--machine` names a GPU the Studio's cloud doesn't offer, `studio start` can come up on a CPU
-machine with only a warning**, and you keep paying while you work on the wrong hardware.
+A Studio's cloud is fixed at creation (`studio switch` can't move it), and the default cloud
+doesn't sell every GPU at every count: 1× H200 isn't on AWS. **Ask for a GPU the Studio's cloud
+doesn't sell and `studio start` comes up on CPU with only a "hasn't been vetted" warning.** So:
 
-So for any GPU Studio, find a cloud that sells the machine at the GPU count you want, then create
-the Studio on it with `--cloud <cluster-id>`. Agent permission rules often block `curl` while
-allowing `lightning`, so read the catalog with `lightning api`. It returns the same JSON; it just
-needs the signed-in CLI you already have by launch time. The provider → cluster-id table is in `lightning-cost-estimation`
-(*Cloud providers*); Lightning Cloud (`MACHINE`) is the usual first choice.
+1. **Pick a cloud that sells the GPU at your count.** Read the catalog with `lightning api`
+   (agent permission rules often block `curl`); the provider → cluster-id table is in
+   `lightning-cost-estimation` (*Cloud providers*). A reused Studio keeps its old cloud, so check
+   it in `lightning studio list` first and create a new Studio if it's the wrong one.
+2. **Set up on CPU on that cloud.** Installs, model downloads and CUDA source builds bill at GPU
+   rates otherwise. Builds need their target set, e.g. `TORCH_CUDA_ARCH_LIST=9.0` for H100/H200.
+3. **Switch to the GPU and check the hardware** before running anything. No GPU means stop the
+   Studio and go back to step 1; don't retry.
 
-**This applies to a Studio you reuse, too.** A Studio keeps the cloud it was created on, so check it
-before starting an existing one on a GPU: `lightning studio list --teamspace owner/teamspace` shows
-each Studio's cloud. If that cloud doesn't sell the GPU you need, create a new Studio with `--cloud`
-instead of restarting the old one.
-
-**Install and build before attaching the GPU.** Package installs, model downloads and source builds
-of CUDA extensions can take ten minutes or more, and on a GPU machine they bill at GPU rates. Start
-the Studio as `--machine CPU` on the cloud you chose, do the setup there, then `studio switch` to
-the GPU. A CUDA extension built on a CPU machine needs its target set explicitly, e.g.
-`TORCH_CUDA_ARCH_LIST=9.0` for H100/H200, because there's no GPU for it to detect.
-
-```bash
-lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
-  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .availableInSeconds, .outOfCapacity] | @tsv'
-lightning studio start --name my-studio --teamspace owner/teamspace --machine H200 --cloud lightning-baremetal --create
-```
-
-### Check what actually started
-
-Right after every `start` or `switch` onto a GPU, confirm the hardware from inside the Studio
-before uploading data or launching work:
-
-```bash
-uv run --with lightning-sdk python - <<'EOF'
-from lightning_sdk import Studio, Teamspace
-studio = Studio(name="my-studio", teamspace=Teamspace("my-teamspace", org="my-org"))
-out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
-print(studio.status, out if code == 0 else "NO GPU: this is not the machine you asked for")
-EOF
-```
-
-If there's no GPU, stop that Studio and follow *Choose the cloud* above. Don't retry the same
-command.
+The first workflow below does exactly this.
 
 ## Example workflows
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
 
-**Create a studio, run a script, collect results, stop** (cheap default: start on CPU, switch to GPU only for the run):
+**Set up on CPU, switch to a GPU, run, collect results, stop:**
 
 ```bash
-lightning studio start --name exp-1 --teamspace my-org/my-teamspace --machine CPU --create
-lightning cp -r ./src lit://my-org/my-teamspace/studios/exp-1/src/
-lightning studio switch --name exp-1 --teamspace my-org/my-teamspace --machine L4
+lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
+  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .outOfCapacity] | @tsv'
+lightning studio start --name exp-1 --teamspace my-org/my-teamspace --machine CPU --cloud lightning-baremetal --create
+lightning cp -r ./src lit://my-org/my-teamspace/studios/exp-1/src/     # contents land in ~/src
 ```
 ```python
-from lightning_sdk import Studio
+from lightning_sdk import Machine, Studio
 studio = Studio("exp-1", teamspace="my-org/my-teamspace")
-out, code = studio.run_with_exit_code("cd ~/src && pip install -r requirements.txt && python train.py")
-print(out)
+studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
+studio.switch_machine(Machine.H200)
+out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader")
+assert code == 0, "no GPU: stop this Studio and pick another cloud"
+studio.run_and_detach("cd ~/src && nohup python train.py > train.log 2>&1", timeout=30)
+print(studio.run("tail -n 40 ~/src/train.log"))              # within the first minute: crashes show up in seconds
 ```
 ```bash
 lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
@@ -231,13 +206,6 @@ lightning studio ssh --name exp-1 --teamspace my-org/my-teamspace          # int
 lightning ssh configure --name exp-1 --teamspace my-org/my-teamspace      # writes ~/.ssh/config Host block...
 ssh exp-1 'python ~/src/eval.py'                                          # ...then plain ssh runs one-off commands
 lightning studio connect exp-1 --teamspace my-org/my-teamspace --machine CPU   # create+start+ssh in one shot
-```
-
-**Kick off a long run and detach** (survives your session; studio keeps billing until stopped):
-
-```python
-out, code = studio.run_and_detach("cd ~/src && nohup python train.py > train.log 2>&1", timeout=30)
-# later: studio.run("tail -20 ~/src/train.log")
 ```
 
 ## Raw API fallback
@@ -257,28 +225,15 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - `run*` methods and `studio switch` require status `Running`; `start()` on a studio already running on a different machine raises — use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
 - `studio create` does not attach compute; `studio start --create` does both.
-<!-- TODO: remove this workaround once the backend rejects a GPU request it can't fill instead of
-starting a CPU machine (Task Board: "CLI silently downgrades to CPU when a GPU SKU isn't available"). -->
-- **`studio start --machine <GPU>` can silently land on CPU** when the Studio's cloud doesn't sell
-  that GPU at that count (e.g. 1× H200 on the default AWS cloud). It prints only a "custom
-  instance type that hasn't been vetted" warning. A later `studio switch --machine H200` then
-  fails, because the cloud is fixed at creation. Always run *Check what actually started*, and
-  create GPU Studios with `--cloud` (see *Choose the cloud*).
-- **For a one-shot run (train, eval, batch job), prefer a job (`lightning-jobs`) to a Studio.** A
-  job stops billing when its command exits, including when it crashes. A Studio keeps billing on
-  an idle GPU until someone notices. Use a Studio when the user wants an interactive box.
-- **Before (re)launching a GPU run, check nothing from an earlier attempt still holds the GPU.** A
-  detached run from a previous try keeps its memory, and the new one fails with `CUDA out of memory`.
-  `studio.run("nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader")` should print
-  nothing; if it doesn't, find the process and stop it (or wait for it) first.
-- **Read the log within the first minute of any long command** you start with `run_and_detach`
-  or `nohup`. Library and argument errors crash in seconds, and a GPU nobody is watching bills
-  just the same. `studio.run("tail -n 40 ~/train.log")` is enough.
-- **Treat a silent monitor as a failure, not as "still running".** A poller with no deadline, or
-  one that only matches progress lines, reports nothing through a crash. So does one running
-  somewhere that can't reach lightning.ai, such as a sandboxed background command. Give every
-  poller a deadline, match crash signatures (`Traceback`, `Error`, `Killed`, `CUDA out of
-  memory`) as well as progress, and check that it prints its first line before relying on it.
+- **For a one-shot run (train, eval, batch), prefer a job (`lightning-jobs`).** A job stops billing
+  when its command exits, crash included; a crashed run on a Studio keeps the GPU billing.
+- **Before relaunching on a GPU, check the last attempt isn't still holding it**, or the new run
+  hits `CUDA out of memory`: `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
+  should print nothing.
+- **Read a detached run's log within the first minute, and treat a silent monitor as a failure.**
+  A poller with no deadline, one that only matches progress lines, or one that can't reach
+  lightning.ai (a sandboxed background command) stays quiet through a crash. Give it a deadline,
+  match `Traceback`/`Error`/`Killed`/`CUDA out of memory` too, and check it prints its first line.
 - **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
 - **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).

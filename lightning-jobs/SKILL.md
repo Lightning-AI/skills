@@ -28,9 +28,9 @@ venv, a conda env, …). Then call plain `lightning …` everywhere. If setup do
 | `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
 | `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
 | The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
-| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …`. Both dirs must be writable: a sandboxed `uvx` also writes under `~/.local/share/uv/tools` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …` |
 | Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
-| Every call fails with `NameResolutionError` ("Failed to resolve 'lightning.ai'"), only inside an agent sandbox | Check which calls fail. **`lightning api` fails too:** the sandbox's network allowlist doesn't include Lightning, so ask the user to allow `lightning.ai` and `*.lightning.ai` (Claude Code: `/sandbox`). **`lightning api` works, but `studio`/`job` commands or Python SDK calls still fail:** those code paths bypass the sandbox's network proxy, and no allowlist fixes them. Ask the user to approve running just the Lightning commands outside the sandbox. Either way, anything you run in the background or poll with fails the same way, often silently |
+| Every call fails with `NameResolutionError`, only inside an agent sandbox | If `lightning api` fails too, ask the user to allow `lightning.ai` and `*.lightning.ai` (Claude Code: `/sandbox`). If only `studio`/`job` commands or the SDK fail, they bypass the sandbox's proxy and no allowlist helps: ask to run just those outside the sandbox. Background pollers fail the same way, silently |
 
 The install above also makes `lightning_sdk` importable in that env, so Python snippets run with
 its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-off scripts with
@@ -243,13 +243,10 @@ catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` a
 <!-- TODO: remove this workaround once the backend rejects a GPU request it can't fill instead of
 starting a CPU machine (Task Board: "CLI silently downgrades to CPU when a GPU SKU isn't available"). -->
 **Pick the cloud for a GPU job before launching.** The default cloud doesn't sell every GPU at
-every count: on AWS an H200 exists only as an 8-GPU machine. Studios given such a `--machine`
-have silently come up on CPU (see `lightning-studios`), so don't assume a job fails loudly
-instead. Find a cloud that sells the machine at the count you want, then pass
-`--cloud <cluster-id>`. Agent permission rules often block `curl` while allowing `lightning`, so read
-the catalog with `lightning api`. It returns the same JSON; it just needs the signed-in CLI you
-already have by launch time. The
-provider → cluster-id table is in `lightning-cost-estimation` (*Cloud providers*):
+every count (1× H200 isn't on AWS), and Studios asked for one have silently come up on CPU (see
+`lightning-studios`), so don't count on a job failing loudly. Read the catalog with `lightning api`
+(agent permission rules often block `curl`) and pass `--cloud <cluster-id>`; the provider →
+cluster-id table is in `lightning-cost-estimation` (*Cloud providers*):
 
 ```bash
 lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
@@ -365,7 +362,7 @@ inspect <name>`, `lightning job logs <name>`.
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - **Prefer a job to a Studio for one-shot runs** (train, eval, batch). A job stops billing when its command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone notices.
-- **Treat a silent monitor as a failure, not as "still running".** A poller that only matches progress lines, or that runs somewhere unable to reach lightning.ai (a sandboxed background command), reports nothing through a crash. Poll `job.status` or the job list with a deadline, react to `Failed`/`Stopped` as well as `Completed`, match crash signatures (`Traceback`, `Error`, `Killed`, `CUDA out of memory`) in logs, and check that the poller prints its first line before relying on it.
+- **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **`lightning job delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it the command reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**. The job stays listed and keeps costing money, and the failure is easy to miss in a log.
 - **`--query` and `--severity` can't filter every *finished* job.** Where a job's logs are stored decides this: if its lines aren't in the newer log storage, a finished job falls back to its saved log file, which can't be filtered server-side. The CLI and SDK then raise `This job's logs are only available as a saved file ... filter locally` rather than returning nothing, so fetch unfiltered and `grep` locally. `--timestamps` works on both paths. While a job is still `Running` the filters are applied server-side and work.
 - **`job inspect` prints plain JSON** (`--json` is accepted too), so `lightning job inspect <name> | jq -r .status` is a fine polling source. For many jobs at once, `lightning job list --json` includes status, `started_at`/`stopped_at`, `total_cost` and `num_machines`.
