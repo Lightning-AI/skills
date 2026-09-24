@@ -14,7 +14,7 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
 
-**Tutorial:** [fine-tune a 9B model on a cloud GPU from one chat message](examples/finetune-eval/README.md). It starts from a bare Mac or a Claude cloud session.
+**Tutorial:** [teach a 4B model to call tools on a cloud GPU in under 10 minutes](examples/finetune-eval/README.md). It starts from a Mac or a Claude cloud session and one chat message.
 
 All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI, plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
 

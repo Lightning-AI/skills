@@ -1,22 +1,25 @@
-# Fine-tune a model on a cloud GPU from one chat message
+# Teach a model to call tools on a cloud GPU, in under 10 minutes
 
-Start with nothing installed. Ask Claude Code in plain words to fine-tune a 9B base model. It sets
-up the tools, gets you signed in, prices the run, launches it on an H200, and comes back with the
-model's score before and after training. It takes about 10 minutes of GPU time and costs about $1.
+Start with a ready-made training script and one chat message. Claude Code prices the run, launches
+it on an H200, and comes back with how well a 4B base model picks and fills in tool calls, before
+and after training. From message to results takes under 10 minutes and costs well under $1 of GPU
+time.
 
 ```mermaid
 flowchart LR
     A[Your chat message] --> B[Claude Code + Lightning skills]
-    B --> C[Install CLI · sign in · price the run]
+    B --> C[Set up · price the run]
     C --> D[H200 job: score → train → score]
     D --> E[Scores + adapter back to you]
 ```
 
-**What runs:** [`finetune_eval.py`](finetune_eval.py) scores
-[Qwen3.5-9B-Base](https://huggingface.co/Qwen/Qwen3.5-9B-Base) on grade-school math word problems
-([GSM8K](https://huggingface.co/datasets/openai/gsm8k)). It then trains a LoRA adapter (a small set
-of extra weights) on the training split, scores the model again, and saves the adapter. Your laptop
-can't run this: the model alone needs about 40–60 GB of GPU memory.
+**What runs:** [`finetune_eval.py`](finetune_eval.py) gives
+[Qwen3.5-4B-Base](https://huggingface.co/Qwen/Qwen3.5-4B-Base) a list of tools and a request, like
+*"What's the weather in Paris and Tokyo?"*, and checks whether it replies with exactly the right
+calls: `[{"name": "get_weather", "arguments": {"city": "Paris"}}, ...]`. It scores 300 held-out
+requests, trains a LoRA adapter (a small set of extra weights) for about 2½ minutes on
+[function-calling examples](https://huggingface.co/datasets/argilla/apigen-function-calling), then
+scores the same 300 again. Your laptop can't run this in time: it needs a GPU with 40 GB+ of memory.
 
 ## The message you'll send
 
@@ -24,16 +27,16 @@ Both paths below end with the same message. It says nothing about which cloud to
 and setting it up is Claude's job.
 
 ```text
-Run finetune_eval.py on a GPU with at least 80 GB of memory (an H200 is ideal). There's no GPU
-here. Keep it under $5, then show me the before/after scores and keep the adapter somewhere I can
-download it.
+Run finetune_eval.py on a GPU with at least 40 GB of memory (an H200 is ideal). There's no GPU
+here. I need results within 10 minutes and it must cost under $5. Show me the before/after scores
+and keep the adapter somewhere I can download it.
 ```
 
 ## Path A: Claude Code on your Mac
 
 1. **Get the example** into a new folder and start Claude Code there:
    ```bash
-   mkdir qwen-math && cd qwen-math
+   mkdir tool-calling && cd tool-calling
    curl -fsSLO https://raw.githubusercontent.com/Lightning-AI/skills/main/examples/finetune-eval/finetune_eval.py
    claude
    ```
@@ -44,9 +47,9 @@ download it.
    /reload-plugins
    ```
 3. **Send the message** above.
-4. **Answer Claude's two questions.** Claude opens a browser tab so you can sign in or create a
-   free account. Then it shows the estimated cost and asks before launching. The results land in
-   `outputs/` next to the script.
+4. **Answer Claude's questions.** If you're new, Claude opens a browser tab so you can sign in or
+   create a free account. Then it shows the estimated cost and asks before launching. The results
+   land in `outputs/` next to the script.
 
 ## Path B: A cloud session in the Claude desktop app
 
@@ -68,17 +71,15 @@ download it.
 
 ## What you get back
 
-| | Base model | After ~300 training steps |
-|---|---|---|
-| **strict**: answer in the trained `#### 42` format | 53.2% (measured, H200, 500 problems) | expected to jump |
-| **flexible**: last number in the reply | 79.0% (measured) | expected smaller, honest gain |
+| Score (300 held-out requests) | What it checks | Base model | After ~2½ min of training |
+|---|---|---|---|
+| **exact** | every call and every argument right | *your run* | *your run* |
+| **names** | the right tools chosen | *your run* | *your run* |
+| **valid** | well-formed JSON calls to tools that exist | *your run* | *your run* |
 
-`metrics.json` contains both scores, the training loss, the time taken and the GPU used.
-`samples.jsonl` holds 20 answers from each model for a side-by-side read, and `adapter/` is the
-trained LoRA. The strict score mostly measures format-following. The flexible score is the fairer
-measure of whether the model got better at math.
-
-The after-training column hasn't been measured yet. Your run produces the real numbers.
+`metrics.json` contains all three scores, the training loss, the time taken and the GPU used.
+`samples.jsonl` holds 20 replies from each model for a side-by-side read, and `adapter/` is the
+trained LoRA. **exact** is the headline: a call with one wrong argument would fail in a real app.
 
 ## Troubleshooting
 
@@ -91,7 +92,7 @@ The after-training column hasn't been measured yet. Your run produces the real n
   environment's network list. Changes to network access and variables apply only to **new**
   sessions.
 - **The job sits in "Pending".** You aren't billed while the job waits for a machine. If no H200
-  frees up, an H100 (80 GB) works too; tell Claude to switch.
+  frees up, an H100 or A100 (80 GB) works too; tell Claude to switch.
 - **The job fails while installing packages or reports an old CUDA driver.** The script's header
   pins the PyTorch build (CUDA 12.8). Ask Claude to read the job logs and adjust that pin.
 - **Log says `flash-linear-attention missing`.** Training still works but runs about 2× slower.
