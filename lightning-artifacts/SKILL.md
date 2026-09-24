@@ -93,6 +93,13 @@ API), so don't try to look it up.
 
 ## Publish a durable link (the CLI flow)
 
+**Publishing makes the file readable by anyone with the link, permanently, and the user must have
+asked for that in the current request.** A request that already says to publish, share publicly or
+"get me a public link" is authorization — don't ask twice. A request to "send this to the team",
+"hand it to CI" or "put it somewhere I can grab it" is *not*: say what the link would expose and
+get an explicit yes first. Revoking later (see below) does not un-share what was already fetched.
+This rule travels with the skill — don't assume the surrounding project repeats it.
+
 Three calls: `lightning cp` the file into the `artifacts/` drive, read back
 which storage cluster it landed on, then register the object as a shared
 artifact. Copy-paste function:
@@ -232,6 +239,10 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
+- **`-F private=false` is what makes the link world-readable, and it is the default in the helper
+  above.** Confirm publication with the user in the current request before running it — sharing
+  internally is not the same ask as minting a permanent public URL, and a revoke afterwards
+  doesn't recall a link someone already opened.
 - **Publish wants the blob's *storage* cluster, not the cluster the upload
   went through.** A teamspace can be bound to compute clusters that store
   their files under a parent cluster's bucket; publishing with such a compute
