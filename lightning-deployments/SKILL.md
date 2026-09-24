@@ -227,6 +227,7 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 
 ## Gotchas
 
+- **Deployments bill for as long as a replica is up; confirm the spend with the user before creating one.** Get an explicit go-ahead before expensive GPU machines (A100/H100/H200/B200), before `--min-replicas >= 1` (which bills continuously, with no scale-to-zero), and before raising `--max-replicas`, since the ceiling is what the bill can reach. Price the machine first — see the `lightning-cost-estimation` skill.
 - Omitting all auth flags creates a **publicly reachable endpoint** — confirm that's intended.
 - **Check `lightning auth whoami` before picking an auth flag.** `--api-key-auth` gates the endpoint on a Lightning *user* key (it serializes to `userApiKey: true`), so an `Auth type: scoped-api-key` caller gets **401 on every request** to an endpoint that is otherwise healthy — replicas running, seconds billed. Use `--token-auth <token>` when a scoped key, CI job or agent is what will call the endpoint; `--api-key-auth` when humans with their own Lightning logins will. Verified against a control: a second, pre-existing healthy deployment returned an identical 401 to the same scoped key.
 - **Verify a deployment against its public URL from `deployment inspect` — never against the app running inside the source Studio.** The Studio proves the image; only the endpoint proves the service. A deployment can show a healthy replica and bill normally while 401-ing every request.

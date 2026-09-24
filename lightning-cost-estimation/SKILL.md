@@ -282,12 +282,27 @@ vram_needed ≈ weights_gb × 1.15 + kv_cache_gb   # ~15% for activations/fragme
 ```
 
 Pick the smallest SKU where `vram_needed ≤ gpus × vram_per_gpu`, keeping tensor-parallel degree
-a power of 2. A 70B model in BF16 ≈ 140 GB → 2×H100, or 1×B200 with room for KV cache.
+a power of 2. Run the whole formula before picking, and keep units straight: the table's "80 GB"
+is the vendor label, but `nvidia-smi` reports **81,559 MiB ≈ 85.5 decimal GB** per H100 (our own
+H200 reads 143,771 MiB ≈ 150.8 GB against a "141 GB" label). So a 70B in BF16 — 140 GB of weights,
+`140 × 1.15 = 161 GB` before KV cache — leaves only ~10 GB of the 171 GB on 2×H100: it fits, but
+only at modest context and concurrency, so size the KV cache before promising it. Aggregate memory
+is a necessary condition, not a sufficient one — the model also has to partition across the cards
+at your tensor-parallel degree.
 
 **Training memory** — full fine-tune with AdamW mixed precision ≈ **16–18 bytes/param**
 (weights + grads + fp32 master + optimizer states) plus activations, sharded across GPUs with
-FSDP/ZeRO-3. LoRA/QLoRA ≈ quantized weights + a few % for adapters, so it usually drops a 70B
-job from 8 GPUs to 1–2.
+FSDP/ZeRO-3. **LoRA and QLoRA are not the same thing:**
+
+- **LoRA** keeps the base weights at full precision and freezes them — so ≈ `2 bytes/param` in
+  BF16, plus optimizer state for the adapters only (a few % of params × 16 bytes), plus
+  activations. It removes the optimizer-state term for the base model, not the weights term.
+- **QLoRA** additionally quantizes the frozen base (NF4 ≈ 0.5 bytes/param), which is what makes
+  the big drop.
+
+Both still need activation memory, which scales with sequence length × batch size and drops
+sharply with gradient checkpointing — parameterize those rather than assuming them away. A 70B
+LoRA run carries ~140 GB of frozen weights, so it needs multiple cards; QLoRA at ~35 GB fits one.
 
 **Training time** (this is what turns into money):
 

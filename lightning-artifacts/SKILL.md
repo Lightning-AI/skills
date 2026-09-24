@@ -93,6 +93,10 @@ API), so don't try to look it up.
 
 ## Publish a durable link (the CLI flow)
 
+**A public link (`private=false`, the default below) needs the user's say-so in this request.**
+"Publish this" or "get me a public link" is authorization — don't ask twice. "Send this to the
+team" is not: say what the link exposes and get a yes, or use `-F private=true`.
+
 Three calls: `lightning cp` the file into the `artifacts/` drive, read back
 which storage cluster it landed on, then register the object as a shared
 artifact. Copy-paste function:
@@ -265,7 +269,9 @@ URL=$(share model-metrics.json)
   uses the shared-artifact record's `contentType`, overriding the stored object.
   Set it on the publish call so HTML/PDF render inline.
 - The public link is genuinely open — anyone with it can fetch the file with no
-  auth. Use `-F private=true` for anything you don't want world-readable.
+  auth, and revoking later doesn't recall a link someone already opened. Use
+  `-F private=true` for anything you don't want world-readable, and confirm a
+  public one with the user first.
 - `-q` (jq filtering) and the `share`/`shares` helpers need the `jq` binary
   installed; without it, parse the JSON yourself.
 - **The list endpoint is newer than the rest.** `GET
