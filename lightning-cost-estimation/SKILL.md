@@ -282,11 +282,13 @@ vram_needed ≈ weights_gb × 1.15 + kv_cache_gb   # ~15% for activations/fragme
 ```
 
 Pick the smallest SKU where `vram_needed ≤ gpus × vram_per_gpu`, keeping tensor-parallel degree
-a power of 2. Run the whole formula before picking — a 70B in BF16 is 140 GB of weights, but
-`140 × 1.15 = 161 GB` **before any KV cache**, so 2×H100 (160 GB) does not fit it: 1×B200
-(180 GB) or 2×H200 (282 GB) does. Aggregate memory across cards is a necessary condition, not a
-sufficient one — the model also has to partition across them at your tensor-parallel degree, and
-GB (10⁹) vs GiB (2³⁰) is a 7% difference, so keep units consistent and say which you used.
+a power of 2. Run the whole formula before picking, and keep units straight: the table's "80 GB"
+is the vendor label, but `nvidia-smi` reports **81,559 MiB ≈ 85.5 decimal GB** per H100 (our own
+H200 reads 143,771 MiB ≈ 150.8 GB against a "141 GB" label). So a 70B in BF16 — 140 GB of weights,
+`140 × 1.15 = 161 GB` before KV cache — leaves only ~10 GB of the 171 GB on 2×H100: it fits, but
+only at modest context and concurrency, so size the KV cache before promising it. Aggregate memory
+is a necessary condition, not a sufficient one — the model also has to partition across the cards
+at your tensor-parallel degree.
 
 **Training memory** — full fine-tune with AdamW mixed precision ≈ **16–18 bytes/param**
 (weights + grads + fp32 master + optimizer states) plus activations, sharded across GPUs with
@@ -298,10 +300,9 @@ FSDP/ZeRO-3. **LoRA and QLoRA are not the same thing:**
 - **QLoRA** additionally quantizes the frozen base (NF4 ≈ 0.5 bytes/param), which is what makes
   the big drop.
 
-Both still need activation memory, which scales with sequence length × batch size and falls
+Both still need activation memory, which scales with sequence length × batch size and drops
 sharply with gradient checkpointing — parameterize those rather than assuming them away. A 70B
-LoRA run is ~140 GB of frozen weights before activations, so it does *not* fit on one 80 GB card;
-QLoRA at ~35 GB does.
+LoRA run carries ~140 GB of frozen weights, so it needs multiple cards; QLoRA at ~35 GB fits one.
 
 **Training time** (this is what turns into money):
 
