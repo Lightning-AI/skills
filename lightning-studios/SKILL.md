@@ -190,22 +190,24 @@ from lightning_sdk import Machine, Studio
 studio = Studio("exp-1", teamspace="my-org/my-teamspace")
 studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
 studio.switch_machine(Machine.H200)
-out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
-gpus = out.splitlines() if code == 0 else []
-print(gpus)                                                   # e.g. ['NVIDIA H200']
-assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: stop this Studio and pick another cloud"
-# train.exit gets the exit code when training ends; clear the last run's before launching
-studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
-print(studio.run("tail -n 40 ~/src/train.log"))              # within the first minute: crashes show up in seconds
-deadline = time.time() + 2 * 3600                             # a bit over the expected run time
-while studio.run_with_exit_code("test -f ~/src/train.exit")[1] != 0:
-    if time.time() > deadline:
-        print(studio.run("tail -n 40 ~/src/train.log"))
-        studio.stop()
-        raise TimeoutError("training overran its deadline; Studio stopped")
-    print(studio.run("tail -n 1 ~/src/train.log"))            # progress line each poll
-    time.sleep(60)
-assert studio.run("cat ~/src/train.exit") == "0", studio.run("tail -n 40 ~/src/train.log")
+try:                                                          # any failure from here stops the GPU
+    out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
+    gpus = out.splitlines() if code == 0 else []
+    print(gpus)                                               # e.g. ['NVIDIA H200']
+    assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another cloud"
+    # train.exit gets the exit code when training ends; clear the last run's before launching
+    studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
+    print(studio.run("tail -n 40 ~/src/train.log"))          # within the first minute: crashes show up in seconds
+    deadline = time.time() + 2 * 3600                         # a bit over the expected run time
+    while studio.run_with_exit_code("test -f ~/src/train.exit")[1] != 0:
+        if time.time() > deadline:
+            raise TimeoutError(studio.run("tail -n 40 ~/src/train.log"))
+        print(studio.run("tail -n 1 ~/src/train.log"))        # progress line each poll
+        time.sleep(60)
+    assert studio.run("cat ~/src/train.exit") == "0", studio.run("tail -n 40 ~/src/train.log")
+except BaseException:
+    studio.stop()
+    raise
 ```
 ```bash
 lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
