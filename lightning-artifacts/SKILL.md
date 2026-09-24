@@ -1,6 +1,6 @@
 ---
 name: lightning-artifacts
-description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (uvx lightning-sdk) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
+description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (from the `lightning-sdk` package) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
 ---
 
 # Lightning AI Artifacts (durable shareable file links)
@@ -12,7 +12,7 @@ The control plane streams the bytes from storage on every request, so unlike a
 presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
 reports, dashboards, dataset samples, or build artifacts.
 
-**This whole flow runs through the `lightning` CLI** (`uvx lightning-sdk`):
+**This whole flow runs through the `lightning` CLI** (from the `lightning-sdk` package):
 `lightning cp` / `ls` / `rm` handle the files, and `lightning api` — a
 `gh api`-style raw HTTP client — makes the two publish calls around them. No
 Python, no SDK code, not even a `curl`.
@@ -20,7 +20,11 @@ Python, no SDK code, not even a `curl`.
 ## Setup & auth
 
 ```bash
-uvx lightning-sdk --version          # the CLI; no install needed (uvx runs it ad-hoc)
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
 lightning login                       # interactive browser sign-in — enough for everything here
 # or: export LIGHTNING_API_KEY=...    # non-interactive alternative (CI, agents)
 ```
@@ -31,14 +35,22 @@ extra auth steps. Get a key from lightning.ai → user/org settings, or
 key** — read it from the environment. To target a non-prod control plane, set
 `LIGHTNING_CLOUD_URL` (default `https://lightning.ai`).
 
-If `lightning cp` / `ls` / `rm` fails with "No such command", a cached older
-CLI is running — refresh with `uvx --refresh lightning-sdk` (or
-`pip install -U lightning-sdk` for a persistent install).
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
 
 `lightning api` flags: `-X` method, `-f key=val` string field, `-F key=val`
-typed field, `-H` header, `--input <file>` request body (`--input /dev/stdin`
-to pipe one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include
-response headers. Fields are JSON body for POST/PUT-with-body and **query
+typed field, `-H` header, `--input <file>` request body (`--input -` to pipe
+one), `-q` jq filter (needs the `jq` binary for `-q`), `-i` include response
+headers, `--silent` no output. Fields with no `-X` make it a POST. Fields are JSON body for POST/PUT-with-body and **query
 params** when the request also has `--input` or is a GET.
 
 ## Resolve the teamspace (do this first)
@@ -53,19 +65,31 @@ use**:
 lightning api /v1/memberships -q '.memberships[] | [.name, .projectId, .ownerType, .ownerId] | @tsv'
 ```
 
-Capture the row's `projectId` and resolve the owner's name (teamspaces are
-org-owned; the membership only carries the id):
+Capture the row's `projectId` and resolve the owner's name. The membership
+only carries the owner's id, and the lookup depends on `ownerType`:
 
 ```bash
 PID=<projectId-from-above>
-OWNER=$(lightning api "/v1/orgs/<ownerId-from-above>" -q .name | tr -d '"')
 TSNAME=<name-from-above>
+OWNER_ID=<ownerId-from-above>
+if [ "<ownerType-from-above>" = organization ]; then
+  OWNER=$(lightning api "/v1/orgs/$OWNER_ID" | jq -r .name)
+else   # a personal teamspace: yours, or another user's you were added to
+  OWNER=$(lightning api /v1/users/search -X GET -f "query=$OWNER_ID" \
+    | jq -r --arg id "$OWNER_ID" '.users[] | select(.id==$id) | .username')
+fi
+[ -n "$OWNER" ] && [ "$OWNER" != null ] || echo "could not resolve the owner of $TSNAME — ask the user" >&2
 ```
+
+Search by id and match on `.id` exactly (the search is fuzzy); this is the lookup
+the SDK itself uses. Never fall back to your own username: a wrong owner in the
+`lit://` path uploads into a different teamspace.
 
 Teamspaces you can access through org-level permissions (rather than direct
 membership) don't appear in `/v1/memberships` — if the user names one you
-can't find, ask them for the `<owner>/<teamspace>` pair and get the project id
-from `lightning api "/v1/projects?name=..."` or from them directly.
+can't find, ask them for the `<owner>/<teamspace>` pair and the project id.
+There is no list-projects-by-name endpoint (`/v1/projects?name=…` isn't in the
+API), so don't try to look it up.
 
 ## Publish a durable link (the CLI flow)
 
@@ -82,7 +106,7 @@ artifact. Copy-paste function:
 share() {
   local FILE="$1" NAME="${2:-$(basename "$1")}" CT="${3:-$(file -b --mime-type "$1")}"
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
-  # 1. upload; cp picks the teamspace's default cloud account and prints which
+  # 1. upload; the server picks where to store it (see Gotchas)
   lightning cp "$FILE" "lit://$OWNER/$TSNAME/$KEY" >&2 || return 1
   # 2. the blob's clusterId from the listing is the storage cluster the
   #    publish call needs (see Gotchas — it is not always the cluster the
@@ -214,8 +238,11 @@ URL=$(share model-metrics.json)
   cluster's id fails with HTTP 500. The artifacts tree listing reports each
   blob's real `clusterId` — always read it from there (the `share` function
   does). Deletes don't take a cluster at all.
-- **`lightning cp` needs no cluster flag** — it resolves the teamspace's
-  default cloud account and prints which it chose. Pass
+- **`lightning cp` needs no cluster flag** — the server picks the storage.
+  Only if it rejects the upload for a missing cluster does `cp` choose one
+  itself (`LIGHTNING_CLUSTER_ID` first, which is set inside a Studio, then the
+  teamspace's only or default cloud account) and warn `No cloud account
+  specified. Using cloud account: <id>.` Pass
   `--cloud-account <id>` only to steer placement deliberately, and pick a
   cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
   (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the

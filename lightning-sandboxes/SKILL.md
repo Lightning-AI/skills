@@ -10,8 +10,30 @@ A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default
 ## Setup & auth (sandbox-specific)
 
 ```bash
-uvx lightning-sdk --version    # CLI; `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
+# Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
+v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
+[ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
+  || uv pip install -U lightning-sdk || python3 -m pip install -U lightning-sdk
+lightning --version   # must print "Lightning CLI version …"; if not, see the table below
+# `sandbox <cmd>` is also installed standalone == `lightning sandbox <cmd>`
 ```
+
+This uses, and if needed installs into, the environment the agent runs in (the user's project
+venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
+
+| Symptom | Fix |
+|---|---|
+| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
+| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
+| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
+| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" uvx lightning-sdk …` |
+| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
+
+The install above also makes `lightning_sdk` importable in that env, so Python snippets run with
+its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-off scripts with
+`uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
+then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
 **Org scope comes from the API key — there is no org flag or `LIGHTNING_ORG_ID` env var (it's rejected).** Sandboxes need an **org- or teamspace-scoped API key** in `LIGHTNING_SANDBOX_API_KEY`; a personal `lightning login` credential fails with *"Use a teamspace- or org-scoped API key (Members → API keys), not your personal login key."*
 
@@ -72,7 +94,7 @@ There is no `cp`/upload CLI — move files via `run` with shell commands, or the
 ## Python SDK
 
 ```python
-from lightning_sdk.sandbox import Sandbox, SandboxConfig, RunCommandOpts, NetworkPolicy
+from lightning_sdk.sandbox import Sandbox, SandboxConfig, RunCommandOpts, NetworkPolicy, PtyCreateOpts
 
 # optional explicit config; otherwise env (LIGHTNING_SANDBOX_API_KEY) / lightning login creds are used
 Sandbox.configure(api_key="...")
@@ -119,7 +141,7 @@ for s in client.list(teamspace="owner/teamspace").sandboxes: print(s.sandbox_id,
 sb = client.get("sbx-...")
 ```
 
-Interactive PTY (needs `pip install websocket-client`): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. PTY exit codes are unreliable (0/-1/None only) — prefer `run_command` when you need exit codes.
+Interactive PTY (`websocket-client` ships with the SDK): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. The result's `exit_code` is the shell's real status on a clean close, `0` when the backend reports none, `-1` if the connection broke (`error` says why) and `None` while running — prefer `run_command` when you need a guaranteed exit code.
 
 ## Docker inside a sandbox
 
@@ -261,7 +283,7 @@ fresh = Sandbox.create(name="experiment-1", snapshot_id=snap.id,
 ```bash
 lightning api /v1/core/sandboxes -X GET -f "organizationId=${ORG_ID}" -f "projectId=${PROJECT_ID}" -f limit=20
 lightning api /v1/core/sandboxes -X GET ... | jq -r '.sandboxes[] | .name // .id'
-lightning api "/v1/core/sandboxes/${SANDBOX_ID}" -f "organizationId=${ORG_ID}"
+lightning api "/v1/core/sandboxes/${SANDBOX_ID}" -X GET -f "organizationId=${ORG_ID}"   # -X GET: fields without it send a POST
 lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls -F detached=false
 ```
 
@@ -275,11 +297,11 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls 
 - **A CIDR allowlist does not implicitly permit DNS.** `allow_cidrs` is enforced at the IP layer, and the sandbox's `/etc/resolv.conf` points at `1.1.1.1` and `8.8.8.8` — outside any realistic application allowlist — so every hostname lookup fails with `Temporary failure in name resolution` while raw-IP connections work. Include the resolver addresses (`1.1.1.1/32`, `8.8.8.8/32`) in the allowlist, or point the sandbox at a resolver inside it.
 - **Files restored from a snapshot come back with mtime `1970-01-01T00:00:00Z`.** Epoch-zero timestamps break `make`, `ccache`, and pip/setuptools staleness checks — which bites hardest in the pre-baked-environment use case snapshots exist for. Touch files you depend on, or avoid mtime-based staleness logic in a restored sandbox.
 - **Egress policy is Python-SDK-only.** `sandbox create` has no network-policy flag, so `deny-all` and CIDR allowlists require dropping into `lightning_sdk`; everything else here (create, run, snapshot, list, delete) is CLI-doable.
-- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced `lightning machine list` catalog — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
+- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced accelerator catalog (or in `lightning machine list`) — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
 - Ephemeral (default) sandboxes lose everything on stop; only `persistent=True` gives stop/resume. Snapshots capture the filesystem only, never running processes.
 - **The default runtime is `node24` — Node.js only, no Python.** Pass `runtime="python313"` / `--runtime python313` for Python workloads (naming: `node22`, `node24`, `python313`, plus the `-docker` variants; invalid ids fail with "invalid runtime"). `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
 - To run containers inside a sandbox, use a `-docker` runtime (`--runtime python313-docker`) or `docker=True` / `--docker` — never hand-install Docker on a plain runtime. See [Docker inside a sandbox](#docker-inside-a-sandbox), especially the `--network=host` requirement.
 - Public port URLs only exist for ports declared at create time (`ports=[8080]` / `--port 8080`); there is no way to expose a port later. `create` normally returns them already populated in `port_urls`; if empty, re-`get` the sandbox.
 - Network policy is **create-time only** — you cannot change egress rules on a running sandbox. Default is open egress (`allow-all`); use `"deny-all"` or CIDR allowlists for untrusted code.
 - Commands run as **root** inside the sandbox.
-- Error "organization_id is required" → the API key isn't org/teamspace-scoped; "API key is not authorized for this project" → the teamspace-scoped key is bound to a different teamspace.
+- Scoped-key errors: the CLI and SDK turn the raw server errors into hints. `Use a teamspace- or org-scoped API key ...` (raw: "organization_id is required") → you're on a personal login key. `Your teamspace-scoped API key is not authorized for the project requested via teamspace= ...` (raw: "API key is not authorized for this project") → the key is bound to a different teamspace. `This operation requires a teamspace-scoped API key ...` → snapshot/stop with an org-scoped key. Only raw `lightning api` calls show the raw wording.

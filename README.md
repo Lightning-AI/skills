@@ -7,14 +7,14 @@ Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent tha
 | Skill | What it covers |
 |---|---|
 | [`lightning-studios`](lightning-studios/SKILL.md) | Create, start, stop and manage cloud GPU Studios; switch machines, run commands, transfer files, SSH |
-| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, SSH into running jobs/MMTs, collect artifacts |
+| [`lightning-jobs`](lightning-jobs/SKILL.md) | Launch and monitor batch jobs (single and multi-machine) on CPUs/GPUs, stream logs, SSH into running jobs or multi-machine workers, collect artifacts |
 | [`lightning-deployments`](lightning-deployments/SKILL.md) | Deploy containers/APIs with autoscaling, manage releases, endpoints and auth |
 | [`lightning-sandboxes`](lightning-sandboxes/SKILL.md) | Fast ephemeral VMs for safe code execution: run commands, background processes, file I/O, Docker (`docker` / `docker compose`) and public port URLs |
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
 
-All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI (runnable via `uvx`), plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
+All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI, plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
 
 ## Install
 
@@ -63,8 +63,8 @@ cp -r $SKILLS ~/.claude/skills/
 
 ## Prerequisites
 
-- `uv` installed (skills invoke the CLI via `uvx lightning-sdk`)
-- A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` + `LIGHTNING_USER_ID`
+- Python with `uv` or `pip`. Skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
+- A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional)
 
 ## Conventions
 
