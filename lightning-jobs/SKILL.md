@@ -36,6 +36,33 @@ its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-
 `uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
 then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
+### First run: no CLI or account yet
+
+The user may never have heard of Lightning and may not have asked for it by name. Say in one line
+that the job would run on Lightning AI and why (e.g. "no GPU here"), then set up for them instead
+of stopping at the first error. Run the setup block above (it installs the CLI if it's missing),
+then check for a signed-in user:
+
+```bash
+lightning auth whoami || echo "not signed in"
+```
+
+If nobody is signed in, choose the path that fits the machine:
+
+- **Has a browser (a laptop):** run `lightning login`. It opens lightning.ai, where a new user can
+  create a free account. The command returns once the browser sign-in completes, so give it a few
+  minutes and tell the user a tab is opening.
+- **No browser (Claude Code cloud session, CI, remote box):** ask the user to sign up at
+  lightning.ai, then copy `LIGHTNING_USER_ID` and `LIGHTNING_API_KEY` from their avatar →
+  **Global Settings → Keys → Login via CLI**. They go in as environment variables where the agent
+  runs. **Never ask for the key in chat.** In a Claude Code cloud session, both values belong in
+  the cloud environment's **Environment variables**. The same dialog's **Network access** must be
+  **Custom**, allowing `lightning.ai` and `*.lightning.ai` with the default list kept. Both
+  changes take effect in a **new** session only.
+
+Then continue with *Resolving org and teamspace*. A new account has one teamspace, so there's
+nothing to ask.
+
 ## Resolving org and teamspace (do this first)
 
 Jobs live in a teamspace owned by an organization or a user. **Never guess.** Use an explicit `--teamspace owner/teamspace` flag (Python: `teamspace="owner/teamspace"`; the separate `org=`/`user=` arguments are deprecated), or env vars `LIGHTNING_ORG` / `LIGHTNING_TEAMSPACE`, or the config default (`lightning config get teamspace`). If none is set, list the options and **ask the user which org/teamspace to use**:

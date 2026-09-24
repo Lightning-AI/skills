@@ -1,1 +1,4 @@
 .env
+
+# run outputs from examples (metrics, samples, adapters)
+examples/*/outputs/
