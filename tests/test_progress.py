@@ -1,0 +1,389 @@
+"""Unit tests for lightning-jobs/progress.py: parsing, ETA, stalls and setbacks.
+
+Run with: python3 -m unittest discover -s tests
+"""
+
+import importlib.util
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import types
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location(
+    "progress", Path(__file__).resolve().parent.parent / "lightning-jobs" / "progress.py"
+)
+progress = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(progress)
+
+T0 = 1_800_000_000.0
+
+
+def ts(t: float) -> str:
+    return datetime.fromtimestamp(t, tz=timezone.utc).isoformat()
+
+
+class Run:
+    """Drives a tracker the way the poller does, with explicit clock values."""
+
+    def __init__(self, name="train-42"):
+        self.s = progress.new_state(name)
+        self.events = []
+        self.tick("Running", T0)
+
+    def line(self, t, text, job="train-42"):
+        self.events += progress.on_line(self.s, job, f"{ts(t)} {text}", t)
+
+    def tick(self, status, t, attempt=None):
+        self.events += progress.on_tick(self.s, status, attempt, t)
+
+    def kinds(self):
+        return [e["kind"] for e in self.events]
+
+
+class Parsing(unittest.TestCase):
+    def test_progress_line(self):
+        r = progress.parse_progress("PROGRESS 450/1000 attempt=2 loss=0.3")
+        self.assertEqual((r["step"], r["total"], r["attempt"], r["source"]), (450, 1000, 2, "progress"))
+
+    def test_tqdm_last_redraw_wins(self):
+        line = " 10%|█         | 100/1000 [00:10<01:30]\r 45%|████▌     | 450/1000 [00:45<00:55, 10it/s]"
+        r = progress.parse_progress(line)
+        self.assertEqual((r["step"], r["total"], r["source"]), (450, 1000, "tqdm"))
+
+    def test_tqdm_epoch_and_validation(self):
+        self.assertEqual(progress.parse_progress("Epoch 3:  40%|████      | 40/100 [00:04<00:06]")["epoch"], 3)
+        self.assertIsNone(progress.parse_progress("Validation DataLoader 0:  50%|█████     | 5/10 [00:01<00:01]"))
+
+    def test_error_lines(self):
+        self.assertIsNone(progress.parse_error("Traceback (most recent call last):"))
+        self.assertIn("OutOfMemoryError", progress.parse_error("torch.OutOfMemoryError: CUDA out of memory."))
+        self.assertIsNone(progress.parse_error("step 10 loss 0.4"))
+
+    def test_bar(self):
+        self.assertEqual(progress.bar(6, 9, 20, width=20), "▓" * 6 + "▒" * 3 + "░" * 11)
+        self.assertEqual(progress.fmt_duration(160), "2m40s")
+        self.assertEqual(progress.fmt_duration(3900), "1h05m")
+
+
+class Progress(unittest.TestCase):
+    def test_eta_and_milestones(self):
+        r = Run()
+        for i in range(0, 60):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/1000")
+        self.assertEqual(r.s["phase"], "running")
+        self.assertAlmostEqual(r.s["rate"], 1.0)
+        self.assertAlmostEqual(r.s["eta_s"], 410.0)
+        self.assertEqual([e["msg"].split(" · ")[0] for e in r.events if e["kind"] == "milestone"],
+                         [f"train-42: {p}%" for p in (10, 20, 30, 40, 50)])
+
+    def test_reconnect_replay_is_ignored(self):
+        r = Run()
+        for i in range(5):
+            r.line(T0 + i, f"PROGRESS {i + 1}/10")
+        for i in range(5):  # a reconnect replays history from the start
+            r.line(T0 + i, f"PROGRESS {i + 1}/10")
+        self.assertEqual(r.s["step"], 5)
+        self.assertEqual(r.s["setbacks"], [])
+
+    def test_stall_then_recovery(self):
+        r = Run()
+        for i in range(10):
+            r.line(T0 + 10 * i, f"PROGRESS {i}/100")
+        r.line(T0 + 95, "RuntimeError: NCCL watchdog timeout")
+        r.tick("Running", T0 + 100)
+        self.assertNotEqual(r.s["phase"], "stalled")
+        r.tick("Running", T0 + 90 + 121)
+        self.assertEqual(r.s["phase"], "stalled")
+        self.assertIn("NCCL", r.events[-1]["msg"])
+        r.line(T0 + 400, "PROGRESS 10/100")
+        self.assertEqual(r.kinds()[-2:], ["recovered", "milestone"])
+        self.assertEqual(r.s["setbacks"], [])  # a stall that resumes in place is not a setback
+        self.assertAlmostEqual(r.s["lost_s"], 310.0)
+
+
+class Setbacks(unittest.TestCase):
+    def test_partial_regression_in_same_job(self):
+        r = Run()
+        for i in range(46):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/1000")
+        r.line(T0 + 455, "ValueError: loss is NaN, rolling back")
+        r.line(T0 + 500, "PROGRESS 300/1000")  # the script reloaded an earlier checkpoint
+        sb = r.s["setbacks"][-1]
+        self.assertEqual((sb["kind"], sb["from"], sb["to"], sb["peak"]), ("resume", 450, 300, 450))
+        self.assertIn("NaN", sb["cause"])
+        self.assertEqual(r.s["phase"], "recovering")
+        self.assertIsNone(r.s["eta_s"])  # old rate discarded
+        self.assertIn("▒", progress.render_line(r.s, T0 + 500))
+        for i in range(1, 4):
+            r.line(T0 + 500 + 10 * i, f"PROGRESS {300 + 10 * i}/1000")
+        self.assertEqual(r.s["phase"], "running")
+        self.assertIsNotNone(r.s["eta_s"])
+        for i in range(4, 20):
+            r.line(T0 + 500 + 10 * i, f"PROGRESS {300 + 10 * i}/1000")
+        self.assertEqual(r.s["peak"], 490)  # passing the old peak clears the lost ground
+        self.assertNotIn("▒", progress.render_line(r.s, T0 + 700))
+        self.assertIn("↺1", progress.render_line(r.s, T0 + 700))
+
+    def test_failure_then_resume_in_new_job(self):
+        r = Run()
+        for i in range(46):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/1000")
+        r.line(T0 + 455, "torch.OutOfMemoryError: CUDA out of memory")
+        # poller: job Failed -> waiting; session relaunches as train-42-a2
+        r.s["phase"], r.s["issue_since"] = "pending", T0 + 450
+        r.s["job"], r.s["job_running_since"] = "train-42-a2", None
+        r.tick("Pending", T0 + 600)
+        r.tick("Running", T0 + 700)
+        r.tick("Running", T0 + 900)
+        self.assertNotEqual(r.s["phase"], "stalled")  # a relaunch gets time to start
+        r.line(T0 + 950, "PROGRESS 400/1000 attempt=2", job="train-42-a2")
+        sb = r.s["setbacks"][-1]
+        self.assertEqual((sb["kind"], sb["to"]), ("resume", 400))
+        self.assertAlmostEqual(sb["lost_s"], 500.0)
+        self.assertIn("out of memory", sb["cause"])
+
+    def test_failure_then_restart_from_scratch(self):
+        r = Run()
+        for i in range(46):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/1000")
+        r.line(T0 + 1000, "PROGRESS 0/1000", job="train-42-a2")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "restart")
+        self.assertTrue(progress.render_line(r.s, T0 + 1000).split()[2].startswith("▒"))
+
+    def test_new_setup(self):
+        r = Run()
+        for i in range(10):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/1000")
+        r.line(T0 + 200, "PROGRESS 5/500")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "new-setup")
+        self.assertEqual(r.s["peak"], 5)
+
+    def test_requeue_and_platform_retry(self):
+        r = Run()
+        r.tick("Running", T0 + 1, attempt=1)
+        r.line(T0 + 10, "PROGRESS 50/100")
+        r.tick("Pending", T0 + 20, attempt=2)
+        self.assertEqual(r.kinds()[-2:], ["retry", "requeued"])
+        r.tick("Running", T0 + 60, attempt=2)
+        r.line(T0 + 80, "PROGRESS 40/100")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
+        self.assertAlmostEqual(r.s["setbacks"][-1]["lost_s"], 70.0)
+
+    def test_tqdm_epoch_rollover_is_not_a_setback(self):
+        r = Run()
+        for ep in range(3):
+            for i in range(0, 101, 20):
+                r.line(T0 + ep * 100 + i, f"Epoch {ep}: {i}%|███| {i}/100 [00:01<00:01]")
+        self.assertEqual(r.s["setbacks"], [])
+        r.line(T0 + 400, "Epoch 1: 60%|███| 60/100 [00:01<00:01]")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
+
+    def test_progress_lines_outrank_tqdm(self):
+        r = Run()
+        r.line(T0 + 1, " 90%|█████████ | 9/10 [00:01<00:00]")
+        r.line(T0 + 2, "PROGRESS 100/1000")
+        r.line(T0 + 3, " 10%|█         | 1/10 [00:01<00:00]")
+        self.assertEqual((r.s["step"], r.s["source"], r.s["setbacks"]), (100, "progress", []))
+
+
+class LiveRunFindings(unittest.TestCase):
+    """Problems seen in the first live run (Qwen3.5-4B SFT job)."""
+
+    def test_allocator_warning_is_not_an_error(self):
+        warn = ("[W924 14:51:32.327618612 CUDACachingAllocator.cpp:3933] memory allocation failed "
+                "with OOM on device 0 while trying to allocate")
+        self.assertIsNone(progress.parse_error(warn))
+        self.assertIsNone(progress.parse_error("UserWarning: out of memory fallback in use"))
+        self.assertIsNotNone(progress.parse_error("torch.OutOfMemoryError: CUDA out of memory."))
+
+    def test_reestimated_total_is_not_a_setback(self):
+        r = Run()
+        for i in range(1, 8):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/{300 - 5 * i}")  # the script refines its total
+        self.assertEqual(r.s["setbacks"], [])
+        self.assertEqual((r.s["step"], r.s["total"]), (70, 265))
+
+    def test_time_budget_units_give_the_right_eta(self):
+        r = Run()
+        for t in range(0, 101, 10):
+            r.line(T0 + t, f"PROGRESS {t}/300")  # seconds of a 300 s budget
+        self.assertAlmostEqual(r.s["eta_s"], 200, delta=1)
+
+    def test_stages_keep_their_own_bars_and_quiet_stages_do_not_stall(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup")
+        r.line(T0 + 60, "PROGRESS_PHASE train")
+        for i in range(11):
+            r.line(T0 + 60 + 10 * i, f"PROGRESS {10 * i}/100")
+        r.line(T0 + 175, "PROGRESS_PHASE eval")
+        self.assertIsNone(r.s["step"])
+        r.tick("Running", T0 + 175 + 900)  # 15 quiet minutes of eval: not a stall
+        self.assertNotIn("stall", r.kinds())
+        self.assertIn("[eval]", progress.render_line(r.s, T0 + 1075))
+        stages = [e["msg"] for e in r.events if e["kind"] == "stage"]
+        self.assertEqual(stages[-1], "train-42: stage eval (train took 1m55s)")
+        done = progress.finish(r.s, "done", T0 + 1200)
+        self.assertIn("setup 59s, train 1m55s, eval 17m05s", done["msg"])
+
+    def test_relaunch_that_trains_again_is_compared_with_old_training(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE train")
+        for i in range(6):
+            r.line(T0 + 10 * i, f"PROGRESS {10 * i}/100")
+        r.line(T0 + 100, "PROGRESS_PHASE setup")  # relaunched attempt starts over
+        r.line(T0 + 150, "PROGRESS_PHASE train")
+        r.line(T0 + 160, "PROGRESS 30/100")      # resumed from a checkpoint
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
+        self.assertEqual(r.s["peak"], 50)
+        self.assertIn("stage train again", [e["msg"].split(": ", 1)[1].split(" (")[0] for e in r.events])
+
+    def test_statusline_hint_and_config(self):
+        proj = tempfile.mkdtemp()
+        old_home = os.environ.get("HOME")
+        os.environ["HOME"] = proj  # no user settings either
+        try:
+            self.assertIn("not set up", progress.statusline_hint("r", proj))
+            os.makedirs(os.path.join(proj, ".claude"))
+            with open(os.path.join(proj, ".claude", "settings.json"), "w") as f:
+                f.write('{"statusLine": {"type": "command", "command": "my-line.sh"}}')
+            self.assertIn("keeps their current status line", progress.statusline_hint("r", proj))
+            cmd = progress.statusline_snippet("my-line.sh")["statusLine"]["command"]
+            self.assertIn("my-line.sh", cmd)
+            self.assertIn("progress.py", cmd)
+            with open(os.path.join(proj, ".claude", "settings.local.json"), "w") as f:
+                f.write('{"statusLine": {"command": "python3 /x/progress.py statusline"}}')
+            self.assertIsNone(progress.statusline_hint("r", proj))
+        finally:
+            os.environ["HOME"] = old_home
+
+    def test_chained_statusline_runs_both(self):
+        cmd = progress.statusline_snippet("echo theirs")["statusLine"]["command"]
+        d = tempfile.mkdtemp()
+        out = subprocess.run(["sh", "-c", cmd], input=f'{{"workspace":{{"project_dir":"{d}"}}}}',
+                             capture_output=True, text=True).stdout
+        self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
+
+
+class ScriptDone(BaseException):
+    """Ends a scripted Studio run; a BaseException so the poller's retry handler doesn't catch it."""
+
+
+class FakeStudio:
+    """Stands in for lightning_sdk.Studio: runs the read command in a local bash, one scripted step per poll."""
+
+    steps: list = []
+    writer = True
+
+    def __init__(self, name, teamspace=None, create_ok=True):
+        assert create_ok is False  # the poller must never create a Studio
+        self.status = "Running"
+
+    def run_with_exit_code(self, cmd):
+        if not FakeStudio.steps:
+            raise ScriptDone()
+        FakeStudio.steps.pop(0)()
+        out = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True).stdout.strip()
+        # macOS has no /proc, so the scripted writer flag stands in for the open-file check
+        return out.replace("WRITER 0", "WRITER 1" if FakeStudio.writer else "WRITER 0"), 0
+
+
+class StudioMode(unittest.TestCase):
+    def setUp(self):
+        sys.modules["lightning_sdk"] = types.SimpleNamespace(Studio=FakeStudio)
+        progress.STUDIO_INTERVAL = 0
+        self.dir = tempfile.mkdtemp()
+        self.log = os.path.join(self.dir, "train.log")
+
+    def tearDown(self):
+        sys.modules.pop("lightning_sdk", None)
+
+    def write(self, text, mode="a", writer=True):
+        def step():
+            with open(self.log, mode) as f:
+                f.write(text)
+            FakeStudio.writer = writer
+        return step
+
+    def run_studio(self, steps):
+        FakeStudio.steps, FakeStudio.writer = list(steps), True
+        state, events = progress.new_state("train"), []
+
+        def save(evs):
+            events.extend(evs)
+
+        entry = {"kind": "studio", "name": f"s:{self.log}", "studio": "s", "log": self.log}
+        args = types.SimpleNamespace(teamspace=None, relaunch_wait=1800.0)
+        try:
+            outcome = progress.supervise_studio(entry, state, threading.Lock(), save,
+                                                Path(self.dir) / "none.json", 0, args)
+        except ScriptDone:
+            outcome = None
+        return outcome, state, events
+
+    def test_crash_relaunch_into_same_log_then_finish(self):
+        outcome, state, events = self.run_studio([
+            self.write("loading\n"),
+            self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 41, 10))),
+            self.write("Traceback (most recent call last):\nModuleNotFoundError: No module named 'soundfile'\n",
+                       writer=False),                                   # crashed, no PROGRESS_EXIT line
+            lambda: None,                                               # waiting for a relaunch
+            self.write("PROGRESS 0/100\n", mode="w"),                   # agent relaunched into the same log
+            self.write("PROGRESS 10/100\n 20%|██   | 20/100"),           # tqdm-style partial line
+            self.write("\nPROGRESS 100/100\nPROGRESS_EXIT 0\n", writer=False),
+        ])
+        kinds = [e["kind"] for e in events]
+        self.assertEqual(outcome, "Completed")
+        self.assertIn("failed", kinds)
+        failed = next(e for e in events if e["kind"] == "failed")
+        self.assertIn("soundfile", failed["msg"])
+        self.assertIn("relaunch", kinds)
+        self.assertEqual(state["setbacks"][-1]["kind"], "restart")
+        self.assertEqual(state["step"], 100)
+
+    def test_attaching_mid_run_replays_no_old_milestones(self):
+        _, state, events = self.run_studio([
+            self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 51, 5))),  # history at attach time
+            self.write("PROGRESS 60/100\n"),
+        ])
+        self.assertEqual([e["msg"].split(" · ")[0] for e in events if e["kind"] == "milestone"], ["train: 60%"])
+        self.assertEqual(state["step"], 60)
+
+    def test_nonzero_exit_line_waits_then_resume_by_appending(self):
+        outcome, state, events = self.run_studio([
+            self.write("PROGRESS 50/100\nPROGRESS_EXIT 137\n", writer=False),
+            lambda: None,
+            self.write("PROGRESS 45/100\n"),                           # appended by a resumed run
+            self.write("PROGRESS 60/100\nPROGRESS_EXIT 0\n", writer=False),
+        ])
+        self.assertEqual(outcome, "Completed")
+        self.assertIn("exited (137)", next(e["msg"] for e in events if e["kind"] == "failed"))
+        self.assertEqual(state["setbacks"][-1]["kind"], "resume")
+
+    def test_missing_log_is_pending(self):
+        outcome, state, _ = self.run_studio([lambda: None, lambda: None])
+        self.assertIsNone(outcome)
+        self.assertEqual(state["phase"], "pending")
+        self.assertIn("waiting for", progress.render_line(state, time.time()))
+
+
+class Finish(unittest.TestCase):
+    def test_done_summary(self):
+        r = Run()
+        r.line(T0 + 10, "PROGRESS 500/1000")
+        r.line(T0 + 20, "PROGRESS 400/1000")
+        r.s["cost"] = 1.234
+        e = progress.finish(r.s, "done", T0 + 3600)
+        self.assertEqual(e["kind"], "done")
+        self.assertIn("done in 1h00m", e["msg"])
+        self.assertIn("1 setback(s)", e["msg"])
+        self.assertIn("$1.23", e["msg"])
+
+
+if __name__ == "__main__":
+    unittest.main()

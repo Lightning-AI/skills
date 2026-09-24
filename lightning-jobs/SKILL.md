@@ -1,6 +1,6 @@
 ---
 name: lightning-jobs
-description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT.
+description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, show live progress with an ETA and setback tracking (status-line bar + Monitor events), fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT.
 ---
 
 # Lightning AI Jobs
@@ -241,7 +241,7 @@ catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` a
 
 ## Example workflows
 
-Prompts this skill handles: *"run this script on an A100 as a batch job"*, *"launch my docker image on lightning"*, *"why did my job fail — show me the logs"*, *"SSH into my running job"*, *"SSH into rank 1 of my multi-machine job"*, *"run a 2-node distributed training"*.
+Prompts this skill handles: *"run this script on an A100 as a batch job"*, *"launch my docker image on lightning"*, *"why did my job fail — show me the logs"*, *"SSH into my running job"*, *"SSH into rank 1 of my multi-machine job"*, *"run a 2-node distributed training"*, *"how far along is my training run?"*, *"show me a progress bar for this job"*.
 
 **Run a containerized script and report the outcome:**
 
@@ -300,6 +300,137 @@ lightning job ssh ddp-test --rank 1 --teamspace my-org/my-teamspace     # multi-
 
 `--rank` only applies to multi-machine jobs; on a single job it errors.
 
+## Live progress, ETA and setbacks
+
+For a job that runs long enough to be worth watching, show the user how far along it is, when it
+should finish, and what a failure cost. The platform reports only a job's status, never how far
+along it is, so the job has to print its own progress. `progress.py`, next to this file, turns
+those lines into a status-line bar and chat events:
+
+```
+job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
+                               ├─► .lightning-progress/state/<run>.json ─► status line (terminal)
+                               └─► .lightning-progress/events.jsonl ────► Monitor (terminal + desktop)
+```
+
+**1. Make the job print progress.** When you write or edit the training script, add one line
+every N steps or ~10 s. On a multi-machine job print it from rank 0 only, since ranks' logs merge:
+
+```python
+print(f"PROGRESS {step}/{total_steps}", flush=True)   # optional: f"... attempt={n}" for in-script retries
+```
+
+- **Count in the unit that ends the run.** When training stops on a time budget rather than at a
+  step count, report seconds used out of the budget (`PROGRESS {int(elapsed)}/{budget_s}`).
+  Otherwise the ETA follows the step count and the bar jumps from partway to done. If the total
+  can only be estimated, printing a refined total on later lines is fine; only a drop in the
+  step counts as a setback.
+- **Name the stages** when the job does more than train, so the bar says what is happening and
+  a quiet stage isn't reported as a stall:
+
+  ```bash
+  echo "PROGRESS_PHASE setup"; pip install ...
+  echo "PROGRESS_PHASE train"; python train.py      # its PROGRESS lines fill this stage's bar
+  echo "PROGRESS_PHASE eval";  python eval.py
+  ```
+
+  Each stage keeps its own bar, and the final event lists how long each stage took. A relaunch
+  that enters `train` again is compared with the earlier training progress, so resuming from a
+  checkpoint shows up as a setback.
+
+tqdm bars are read as a fallback when a script has no `PROGRESS` line. They are less reliable:
+PyTorch Lightning's per-epoch bars only give progress within the epoch, and validation bars are
+ignored.
+
+**2. Start the poller** as a background Bash command from the project root. `<SKILL_DIR>` is this
+skill's directory:
+
+```bash
+python3 <SKILL_DIR>/progress.py watch train-run-42 --teamspace my-org/my-teamspace
+```
+
+- **Any `python3` works.** If that Python can't import `lightning_sdk` (the usual case with a
+  `uv tool` or `pipx` install of the CLI), `watch` re-runs itself with the Python named on the
+  `lightning` script's first line. If that fails too, it says so; run it with
+  `uv run --with lightning-sdk python …` instead.
+- **Run `watch` outside the agent sandbox.** The poller is the only part that talks to Lightning,
+  and inside Claude Code's sandbox the SDK's requests fail even with `lightning.ai` allowed.
+  `watch` detects this and exits with that message. Ask the user to approve this one command
+  unsandboxed. The Monitor in step 3 and the status line only read local files, so they work
+  inside the sandbox.
+
+`watch` waits through `Pending`, follows the logs while the job runs, and exits once the run is
+final. State goes to `./.lightning-progress/`, which ignores itself in git.
+
+**Work running in a Studio** has no job log stream, so point `watch` at the log file instead.
+Start the process so its last line records the exit code, then watch that file. Paths are
+relative to the Studio's home, `/teamspace/studios/this_studio`:
+
+```bash
+# inside the Studio (e.g. via studio.run_and_detach): the echo marks success or failure
+nohup sh -c 'python train.py; echo PROGRESS_EXIT $?' > work/train.log 2>&1 &
+```
+```bash
+# locally, in the background
+python3 <SKILL_DIR>/progress.py watch --studio my-studio --log work/train.log --teamspace my-org/my-teamspace
+```
+
+It reads new bytes every 10 s over `Studio.run`. Without the `PROGRESS_EXIT` line it notices
+the process has ended once nothing holds the log open, and calls it failed if the last lines
+show an error. Relaunching into the same log, whether overwritten or appended, is the run's
+next attempt. It never creates a Studio, and a Studio that stops or switches machines counts as
+downtime.
+
+**3. Watch events in the session** with a Monitor running
+`python3 <SKILL_DIR>/progress.py events --run train-run-42` at the maximum timeout, re-armed on
+expiry. It prints one line per 10% milestone, stall, setback and final state, and exits when the
+run ends. Report each setback or failure to the user when it lands, not just the final result.
+
+**4. Always offer the status-line bar.** It is the only live, always-visible view: Monitor events
+arrive only at 10% steps. Right after starting `watch`, ask the user whether to add it, unless
+`watch` found it already set up. If it isn't, the Monitor's first event says so. On a yes, print
+the setting from the project root and merge it into `.claude/settings.local.json`:
+
+```bash
+python3 <SKILL_DIR>/progress.py statusline --config
+```
+
+It prints the `statusLine` block with this script's absolute path and a 3 s refresh. If the user
+already has a status line, the block runs theirs first and adds the bars below it. The bar
+shows in the terminal only; the desktop app and IDE extensions don't draw status lines, so
+there the Monitor events are the view.
+
+```
+▶ train-run-42  ▓▓▓▓▓▓▒▒▒░░░░░░░░░░░   30% ↺1  ETA 4m10s (+1m30s) · $0.83
+```
+
+`▓` is done, `▒` is ground lost to a setback (it clears once progress passes the old peak), and `↺N`
+counts setbacks. `(+…)` is the time setbacks and stalls have cost so far.
+
+**5. Keep a failed run going across relaunches.** A run is a chain of attempts, so its peak,
+setback history and lost time carry over when the job name changes. When a job fails, the poller
+holds the run open for 30 minutes (`--relaunch-wait`). After fixing the cause, launch the new job,
+then hand it to the run:
+
+```bash
+python3 <SKILL_DIR>/progress.py watch train-run-42-a2 --run train-run-42 --note "OOM: batch 32→16"
+```
+
+If the poller is still alive, this passes the job to it and returns. If it has already exited,
+this starts a new poller that continues the run's history. To give up on the run, use
+`progress.py abandon train-run-42`. The first progress line of the new attempt decides what kind
+of setback it was:
+
+| New attempt's first step | Recorded as |
+|---|---|
+| Above 0, below the old peak | `resume` from a checkpoint; the lost ground shows as `▒` |
+| About 0 | `restart` from scratch |
+| A different `total` | `new-setup`; the old peak is dropped |
+
+A step that drops inside a running job counts the same way, as does the platform retrying the job
+itself (`max_run_attempts`) or requeueing it. A job that stops printing progress for more than
+about 4× its usual interval is marked `stalled`, with the latest error line as the likely cause.
+
 ## Raw API fallback
 
 For what the CLI doesn't wrap (chiefly exact-cost JSON and other raw resource fields —
@@ -344,4 +475,6 @@ inspect <name>`, `lightning job logs <name>`.
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
 - `--org`/`--user` on `job run` are deprecated (the CLI prints a deprecation warning and will remove them) in favour of the combined `--teamspace owner/teamspace` form, which works headlessly with env-var auth. They still work today, so an existing command using them doesn't need rewriting to run.
+- **`job.logs(follow=True)` replays the job's saved lines each time it connects, and ignores `since` while a job runs.** Anything that follows logs across reconnects must drop lines it has already seen. `progress.py` requests `timestamps=True` and skips lines older than the last one it processed; without that, replayed early progress lines would look like a setback.
+- **A Monitor that polls Lightning directly fails inside Claude Code's sandbox**, because the SDK's and CLI's requests can't get out, and chains like `sleep 60; lightning …` get blocked too. Keep the network side in one unsandboxed `progress.py watch` and point the Monitor at `progress.py events`, which only reads `./.lightning-progress/events.jsonl`. The status line reads the same folder under the session's project directory, so start `watch` from the project root. If they must differ, set `LIGHTNING_PROGRESS_DIR` for both. `watch --query PROGRESS` cuts traffic for very chatty jobs, but it also hides error lines, so stalls lose their likely cause.
 - Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.
