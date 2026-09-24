@@ -1,6 +1,6 @@
 ---
 name: lightning-studios
-description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them, upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio".
+description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio".
 ---
 
 # Lightning AI Studios
@@ -371,6 +371,20 @@ lightning ssh configure --name exp-1 --teamspace my-org/my-teamspace      # writ
 ssh exp-1 'python ~/src/eval.py'                                          # ...then plain ssh runs one-off commands
 lightning studio connect exp-1 --teamspace my-org/my-teamspace --machine CPU   # create+start+ssh in one shot
 ```
+
+For live progress, an ETA and setback tracking on a run like this, don't hand-roll a polling
+loop. Use the `lightning-jobs` skill's `progress.py` (its *Live progress, ETA and setbacks*
+section), pointing it at the Studio and the log. End the run's command with
+`echo PROGRESS_EXIT $?` into the same log so it can tell success from a crash. Paths are
+relative to the Studio's home:
+
+```bash
+python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
+```
+
+It reads new log lines every 10 s. Relaunching into the same log (overwritten or appended)
+counts as the run's next attempt, so crash-and-retry shows up as a setback rather than a
+fresh start.
 
 ## Raw API fallback
 
