@@ -28,7 +28,8 @@ def statusline_snippet(existing: Optional[str]) -> Dict[str, Any]:
     ours = f"python3 {shlex.quote(ENTRY_SCRIPT)} statusline"
     if existing and "progress.py" not in existing:
         # keep the user's own status line: feed the same input to both, theirs first
-        ours = f"sh -c {shlex.quote('in=$(cat); printf %s "$in" | ' + existing + '; printf %s "$in" | ' + ours)}"
+        both = 'in=$(cat); printf %s "$in" | ' + existing + '; printf %s "$in" | ' + ours
+        ours = f"sh -c {shlex.quote(both)}"
     return {"statusLine": {"type": "command", "command": ours, "refreshInterval": 3}}
 
 
