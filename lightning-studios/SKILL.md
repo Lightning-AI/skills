@@ -135,13 +135,33 @@ Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or s
 
 The names above are current as of writing and SKUs do get added, so treat the list as a starting
 point, not a closed set. `lightning machine list` prints the names your installed CLI accepts, but
-it is an offline list and says nothing about what a teamspace can launch. For live availability
-and prices, use `Teamspace("owner/teamspace").list_machines()` in Python (drops out-of-capacity
-machines; each has `cost`/`interruptible_cost`) or
-`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works; the
-`lightning-cost-estimation` skill has the provider values and the costing recipes). Don't invent a
-catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and
-`/v1/compute/accelerators` all return `code: 5`.
+it is an offline list and says nothing about what a teamspace can launch.
+
+**Pick the machine from live data, per cloud account.** A teamspace can launch on several cloud
+accounts, and the same GPU differs between them in name, price and wait. List what each account
+can start right now, fastest first:
+
+```python
+from lightning_sdk import Teamspace
+ts = Teamspace("my-org/my-teamspace")
+FAMILY = "H100"   # the GPU family the workload needs
+# Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
+rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
+        for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
+for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0)):
+    print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
+```
+
+`cost` is USD per hour and `wait_time` the expected seconds until a machine is free. A Studio's
+cloud account is fixed when it is created, so create it on the row's account
+(`Studio(..., cloud=acct)` / `--cloud acct`) and start or switch it with that row's `Machine`
+object: a machine name from one account fails on another. `list_machines()` with no argument
+merges several accounts without saying which row belongs to which. Show the user the top rows with
+price and wait before starting a GPU. For quotes before login, `GET
+/v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
+skill has the provider values and the costing recipes). Don't invent a catalog endpoint:
+`/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all
+return `code: 5`.
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
@@ -203,4 +223,6 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
 - **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
+- **`cloud=` / `--cloud` takes a cloud account *id*.** `Teamspace.cloud_accounts` returns display names such as `Lightning Cloud`, and `Studio(..., cloud="Lightning Cloud")` fails with `400 clusterID Lightning Cloud is invalid`. Use `Teamspace.cloud_account_objs[i].cluster_id` (here `lightning-baremetal`); see *Machine types* for listing each account's machines.
+- **The Studio's `uv` settings don't carry over to jobs launched from it.** In a studio job, `uv run` fails on the Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` (see the `lightning-jobs` skill for the fix).
 - In Python, `teamspace=` takes the same `"owner/teamspace"` string as the CLI `--teamspace` flag (for `Teamspace`, `Studio` and `Job`). The separate `org=`/`user=` arguments still work but are deprecated and emit a `DeprecationWarning`; passing both forms raises `ValueError`.

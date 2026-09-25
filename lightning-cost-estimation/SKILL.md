@@ -370,8 +370,12 @@ lightning job inspect <job-name> --teamspace <owner>/<teamspace>
 **wait for it to settle** — see the Gotchas below. The `Machine.<NAME>` constants carry no prices
 (`.cost` and `.interruptible_cost` are `None`). With auth, `Teamspace("owner/teamspace").list_machines()`
 returns `Machine` objects with `cost`, `interruptible_cost`, `wait_time` and `provider` filled in
-from this same catalog, limited to machines in capacity on the teamspace's cloud accounts. For
-cross-cloud comparisons and quotes before login, use the REST catalog above.
+from this same catalog, limited to machines in capacity on the teamspace's cloud accounts. With no
+argument it merges several accounts without saying which row belongs to which; pass
+`cloud_account=<id>` (from `Teamspace(...).cloud_account_objs[i].cluster_id`, not the display
+names in `.cloud_accounts`, which return an empty list) to price what one account can launch. The
+`lightning-jobs` skill has a per-account listing. For cross-cloud comparisons and quotes before
+login, use the REST catalog above.
 
 ## Gotchas
 

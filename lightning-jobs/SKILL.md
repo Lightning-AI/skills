@@ -215,15 +215,18 @@ lightning cp -r lit://<owner>/<teamspace>/jobs/<job-name>/outputs/ ./outputs    
 ```
 
 The capture can hold much more than the files you wrote — up to the job's whole
-home — so copy the specific files or subfolder rather than the whole
-`jobs/<job-name>/` tree. See what's there first with
-`lightning ls -r lit://<owner>/<teamspace>/jobs/<job-name>`.
-Deleting the job deletes this tree with it.
+home, dotfiles and caches included — so list and copy the specific subfolder, never the
+`jobs/<job-name>/` root: `lightning ls lit://<owner>/<teamspace>/jobs/<job-name>/outputs`
+returned in 2 s where the same `ls` on the job root was still hanging after 60 s. In Python,
+`job.list_artifacts("outputs", recursive=True)` is instant, and
+`job.download_artifacts("outputs", "outputs")` writes the *contents* of the job's `outputs/`
+into the local `./outputs`. Deleting the job deletes this tree with it.
 
-Image (docker) jobs have no home-artifact collection — mount an output location with
-`path_mappings` (see the table above). As an explicit escape hatch from any job you can
-`lightning cp <file> lit://<owner>/<teamspace>/uploads/<path>` to the teamspace Drive,
-but for studio jobs writing to home is the intended path.
+Image (docker) jobs have no home-artifact collection, and **no Lightning credentials inside**:
+the container gets `LIGHTNING_CLOUD_URL`, the job and project ids and `LIGHTNING_USERNAME`, but no
+`LIGHTNING_API_KEY`, so `lightning cp` to the Drive fails from there. Print small results to the
+log (read them back with `lightning job logs`), mount an output location with `path_mappings`
+(see the table above), or use a studio job when files must come back.
 
 ### Machines
 
@@ -231,13 +234,33 @@ but for studio jobs writing to home is the intended path.
 
 The names above are current as of writing and SKUs do get added, so treat the list as a starting
 point, not a closed set. `lightning machine list` prints the names your installed CLI accepts, but
-it is an offline list and says nothing about what a teamspace can launch. For live availability
-and prices, use `Teamspace("owner/teamspace").list_machines()` in Python (drops out-of-capacity
-machines; each has `cost`/`interruptible_cost`) or
-`GET /v1/core/accelerators?cloudProvider=<PROVIDER>` (no auth needed, so plain `curl` works; the
-`lightning-cost-estimation` skill has the provider values and the costing recipes). Don't invent a
-catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and
-`/v1/compute/accelerators` all return `code: 5`.
+it is an offline list and says nothing about what a teamspace can launch.
+
+**Pick the machine from live data, per cloud account.** A teamspace can launch on several cloud
+accounts, and the same GPU differs between them in name, price and wait. List what each account
+can start right now, fastest first:
+
+```python
+from lightning_sdk import Teamspace
+ts = Teamspace("my-org/my-teamspace")
+FAMILY = "H100"   # the GPU family the workload needs
+# Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
+rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
+        for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
+for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0)):
+    print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
+```
+
+`cost` is USD per hour and `wait_time` the expected seconds until a machine is free. Launch with
+the `Machine` object from the row you pick, on that row's account (`Job.run(machine=m,
+cloud=acct, …)`, or a Studio created with `cloud=acct`): a machine name from one account fails on
+another. `list_machines()` with no argument merges several accounts without saying which row
+belongs to which, so it can't tell you where to launch. Show the user the top rows with price and
+wait before launching on a GPU. For quotes before login, `GET
+/v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
+skill has the provider values and the costing recipes). Don't invent a catalog endpoint:
+`/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all
+return `code: 5`.
 
 ## Example workflows
 
@@ -263,6 +286,32 @@ job.wait(interval=15, timeout=2*3600, stop_on_timeout=True)
 print(job.status, f"${job.total_cost:.4f}")
 print(job.logs)          # full logs (job is terminal); stream a running job with: lightning job logs train-run-42 --follow
 ```
+
+**Run a local script on a GPU and bring its output files back** (a studio job, since image jobs
+can't return files on their own). Pick `ACCOUNT` and `MACHINE` from the live listing in
+*Machines*, and confirm the price with the user first:
+
+```python
+import time
+from lightning_sdk import Job, Studio
+
+studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
+studio.start()                                   # CPU is enough: it only holds the files
+studio.upload_file("train.py", "train.py")       # lands in the Studio home, the job's working dir
+job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
+              command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
+              max_run_attempts=1)
+job.wait(interval=15, timeout=2 * 3600, stop_on_timeout=True)
+print(job.status, job.total_cost)
+job.download_artifacts("outputs", "outputs")     # whatever train.py wrote under ./outputs
+studio.stop()
+```
+
+The job runs on a snapshot of the Studio, so the Studio can be stopped once `job.status` is
+`Running`. The first job from a Studio waits in `Pending` while that snapshot is taken (5 min 14 s
+for a fresh CPU Studio when measured); later jobs reuse it and started in about a minute. For a
+single run where the wait matters, starting a Studio directly on the GPU and running the script
+there is quicker (see the `lightning-studios` skill).
 
 Check status and read logs of an existing job straight from the shell — works while it runs or after:
 
@@ -338,10 +387,15 @@ inspect <name>`, `lightning job logs <name>`.
 - `lightning job ssh` only works while the target is **Running** — Pending/Completed/Failed/Stopped raise a clean error. For multi-machine jobs pass `--rank N` (defaults to 0).
 - On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` without `-X GET` — fields with no `-X` make `lightning api` send a POST, and the server 400s with `"spec is required"` (jobs) / `"name is required"` (multi-machine). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name; to look one up by name, filter the list (`/jobs/find` returned `501` when last tested).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
+- **In Python, don't pass `teamspace=` next to a `Studio` object.** `Job.run(studio=s, teamspace="owner/ts")` raises `ValueError: Studio teamspace does not match provided teamspace` even when it is the Studio's own teamspace. Leave `teamspace` out: the job takes it from the Studio.
+- **`uv run` fails inside a studio job** with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder the job machine doesn't have. Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …` (unsetting every `UV_*` variable works too).
+- **Pass the `Machine` from `list_machines(cloud_account=…)`, not a name you know from elsewhere.** The same GPU has different names on different accounts (`lit-h200-1` on one, `lit-h200-141gb-1` on another), and a name the job's account doesn't know fails the launch. `Teamspace.cloud_accounts` gives display names such as `Lightning Cloud`; `list_machines()` returns an empty list for those and `Studio(cloud=…)` fails with `clusterID Lightning Cloud is invalid`, so use `Teamspace.cloud_account_objs[i].cluster_id`.
+- **A job goes `Running` → `Pending` → `Completed` (or `Failed`).** The second `Pending`, about 30 s when measured, is the platform saving the job's outputs after the command exits, not a retry. Don't stop the job then; wait with `job.wait()`, which returns only on a terminal state.
+- **`job.logs` is not a string.** `print(job.logs)` works, but slicing it (`job.logs[-2000:]`) raises `TypeError: '_Logs' object is not subscriptable`. Use `lightning job logs <name> --tail N` for the end of a log.
 - Omitting **both** `--studio` and `--image` (Python: leaving both `studio=` and `image=` unset) does not error — it defaults to the Studio you're currently running inside, resolved via the `LIGHTNING_CLOUD_SPACE_ID` env var, as long as that Studio's teamspace matches the resolved `--teamspace`. Useful for "run this script from my current Studio" without looking up the Studio's name first. If you're not running inside a Studio (or the teamspace doesn't match), omitting both raises an error asking for one explicitly.
 - Studio-job outputs go to **home** (`$LIGHTNING_ARTIFACTS_DIR`), not to `/teamspace/jobs/<name>/artifacts` — that path is **read-only** (writing to it fails `OSError: [Errno 30] Read-only file system`) and is only how you *read* artifacts back from the source Studio. Jobs can't write into the live Studio filesystem. See *Outputs & artifacts*.
 - Job names are unique per teamspace: if the name is taken, the platform creates the job under a new name and the SDK warns `the job was created as '<new>' instead` — read `job.name` back rather than assuming. Omitted `--name` auto-generates one.
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
 - `--org`/`--user` on `job run` are deprecated (the CLI prints a deprecation warning and will remove them) in favour of the combined `--teamspace owner/teamspace` form, which works headlessly with env-var auth. They still work today, so an existing command using them doesn't need rewriting to run.
-- Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.
+- Image jobs can sit in `Pending`/`creating` for a long time (tens of minutes on busy shared pools) before a machine is scheduled — pending time is not billed, but don't treat a slow start as failure. The machine listing's `wait_time` predicts this: when measured, one account's H200 showed ~2 s and another's ~20 min, and a job on the latter sat in `Pending` for over 8 minutes. Always use `job.wait(timeout=..., stop_on_timeout=True)` or monitor `job.status` with your own deadline, and `job.stop()`+`job.delete()` if you give up.
