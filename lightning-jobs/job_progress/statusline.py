@@ -91,7 +91,8 @@ def render_rows(s: dict[str, Any], now: float, expand: bool = True) -> list[str]
                 if peak and step is not None and peak > step:
                     row += f" · peak {pct(peak, total)}%"
         else:
-            row += f"  {since(st['start'])}"
+            # no bar until the stage's first reading; say so, so an empty row doesn't look broken
+            row += f"  no progress reported yet · {since(st['start'])}"
         rows.append(row)
     if s.get("stage_count") and len(stages) < s["stage_count"]:
         left = s["stage_count"] - max(len(stages), s.get("stage_index") or 0)

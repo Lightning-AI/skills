@@ -107,6 +107,7 @@ def new_state(run: str) -> dict[str, Any]:
         "attempt_no": 1,
         "fail_stage": None,
         "prev_error": None,
+        "attempt_fresh": False,
         "stages": [],
         "stage_snap": {},
         "job_running_since": None,
@@ -191,6 +192,7 @@ def end_attempt(s: dict[str, Any], at: float) -> None:
     s["prev_error"] = s["last_error"]
     s["last_error"] = s["last_error_at"] = None
     s["attempt_no"] = s.get("attempt_no", 1) + 1
+    s["attempt_fresh"] = True  # the next reading is compared with this attempt's
 
 
 def on_stage(
@@ -212,6 +214,7 @@ def on_stage(
     snap = s["stage_snap"].get(name) if name == s.get("fail_stage") else None
     if snap is not None:
         s["fail_stage"] = None
+        s["attempt_fresh"] = True  # this stage's first reading shows how much ground was lost
     s.update(dict.fromkeys(PROGRESS_KEYS))
     s["milestone"] = 0
     if snap:
@@ -274,6 +277,13 @@ def on_sample(s: dict[str, Any], r: dict[str, Any], at: float) -> list[dict[str,
     if s["source"] == "tqdm" and r["source"] == "progress":
         s.update(step=None, total=None, peak=None, epoch=None, samples=[], since_reset=0)
     kind = _classify(s, r)
+    if kind and r["source"] == "tqdm" and r["epoch"] == s["epoch"] and not s.get("attempt_fresh"):
+        # scripts draw a fresh tqdm bar per pass (lm-eval: one per few-shot setting), so a drop
+        # within an attempt is a new bar; only the first reading after a relaunch shows ground
+        # lost, and so does an epoch number going backwards
+        s.update(samples=[], since_reset=0, eta_s=None, rate=None, peak=r["step"], peak_epoch=r["epoch"])
+        s["milestone"] = (pct(r["step"], r["total"]) or 0) // 10
+        kind = None
 
     if kind:
         issue_start = s["issue_since"] or s["last_sample_at"] or at
@@ -326,6 +336,7 @@ def on_sample(s: dict[str, Any], r: dict[str, Any], at: float) -> list[dict[str,
         s["peak"], s["peak_epoch"] = r["step"], r["epoch"]
     s["samples"] = (s["samples"] + [[at, r["step"]]])[-RATE_WINDOW:]
     s["since_reset"] += 1
+    s["attempt_fresh"] = False
 
     if len(s["samples"]) >= RECOVERY_SAMPLES:
         (t0, s0), (t1, s1) = s["samples"][0], s["samples"][-1]
