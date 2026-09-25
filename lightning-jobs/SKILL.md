@@ -386,11 +386,13 @@ downtime.
 
 **3. Watch events in the session** with a Monitor running
 `python3 <SKILL_DIR>/progress.py events --run train-run-42` at the maximum timeout, re-armed on
-expiry. It prints one line per 10% milestone, stall, setback and final state, and exits when the
-run ends. Report each setback or failure to the user when it lands, not just the final result.
+expiry. It prints only what needs a reply: stalls, setbacks, failures, retries, relaunches and
+the final state, and exits when the run ends. Report each of these to the user when it lands.
+Routine progress (10% milestones, stage changes) stays in the status-line bar, so it doesn't
+interrupt the session. Where there is no bar (the desktop app, IDE extensions, or the user
+declined it), add `--all` to get those too, and keep the updates to a line each.
 
-**4. Always offer the status-line bar.** It is the only live, always-visible view: Monitor events
-arrive only at 10% steps. Right after starting `watch`, ask the user whether to add it, unless
+**4. Always offer the status-line bar.** It is the only live, always-visible view. Right after starting `watch`, ask the user whether to add it, unless
 `watch` found it already set up. If it isn't, the Monitor's first event says so. Ask it as its own
 question with the ask-user tool, not as a line inside a status update, where it is easy to miss.
 On a yes, run this from the directory Claude Code was started in (not a parent or subfolder),
@@ -403,7 +405,7 @@ python3 <SKILL_DIR>/progress.py statusline --config
 It prints the `statusLine` block with this script's absolute path and a 3 s refresh. If the user
 already has a status line, the block runs theirs first and adds the bars below it. The bar
 shows in the terminal only; the desktop app and IDE extensions don't draw status lines, so
-there the Monitor events are the view.
+there the Monitor events (with `--all`) are the view.
 
 ```
 ▶ train-run-42  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░   71%  stage 3/3 · attempt 2 · ↺1 (+1m35s) · $1.41

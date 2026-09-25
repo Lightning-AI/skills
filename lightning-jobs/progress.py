@@ -1131,6 +1131,16 @@ def cmd_abandon(args: argparse.Namespace) -> int:
     return 0
 
 
+# progress the status-line bar already shows; passing these on only wakes the agent to repeat it
+ROUTINE_KINDS = ("milestone", "stage", "started", "recovered")
+
+
+def wanted(e: Dict[str, Any], run: Optional[str], all_kinds: bool) -> bool:
+    if run and e.get("run") != run:
+        return False
+    return all_kinds or e.get("kind") not in ROUTINE_KINDS
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     d = progress_dir()
     ensure_dirs(d)
@@ -1156,7 +1166,7 @@ def cmd_events(args: argparse.Namespace) -> int:
                 e = json.loads(line)
             except ValueError:
                 continue
-            if args.run and e.get("run") != args.run:
+            if not wanted(e, args.run, args.all):
                 continue
             print(e["msg"], flush=True)
             if args.run and e.get("kind") in FINAL_PHASES:
@@ -1164,6 +1174,16 @@ def cmd_events(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------------- statusline
+
+
+def shown(d: Path, s: Dict[str, Any], now: float) -> bool:
+    """Finished runs linger for a while. So do orphans, runs whose poller died before they
+    finished: flagged as stale at first, then dropped, since nothing will ever finish them."""
+    if s["phase"] in FINAL_PHASES:
+        return now - (s.get("finished_at") or 0) < FINAL_VISIBLE_FOR
+    if now - (s.get("updated_at") or 0) < FINAL_VISIBLE_FOR:
+        return True
+    return pid_alive((read_json(d / "runs" / f"{s['run']}.json") or {}).get("pid"))
 
 
 def cmd_statusline(args: argparse.Namespace) -> int:
@@ -1180,8 +1200,7 @@ def cmd_statusline(args: argparse.Namespace) -> int:
     d = progress_dir()
     now = time.time()
     states = [s for s in (read_json(p) for p in sorted((d / "state").glob("*.json"))) if s]
-    visible = [s for s in states
-               if s["phase"] not in FINAL_PHASES or now - (s.get("finished_at") or 0) < FINAL_VISIBLE_FOR]
+    visible = [s for s in states if shown(d, s, now)]
     visible.sort(key=lambda s: (s["phase"] in FINAL_PHASES, -(s.get("updated_at") or 0)))
     rows: List[str] = []
     for i, s in enumerate(visible[:5]):
@@ -1219,6 +1238,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     e = sub.add_parser("events", help="print notable events as they happen (for a Monitor)")
     e.add_argument("--run", help="only this run; exit once it reaches a final state")
     e.add_argument("--from-start", action="store_true", help="replay earlier events first")
+    e.add_argument("--all", action="store_true",
+                   help="also print routine progress (milestones, stage changes); for sessions "
+                        "without the status-line bar, such as the desktop app")
     e.set_defaults(fn=cmd_events)
 
     s = sub.add_parser("statusline", help="render progress bars for the Claude Code status line")

@@ -331,6 +331,19 @@ class LiveRunFindings(unittest.TestCase):
                              capture_output=True, text=True, env=env).stdout
         self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
 
+    def test_events_pass_on_only_what_needs_a_reply(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE train")
+        for i in range(10):
+            r.line(T0 + 10 * i, f"PROGRESS {i}/100")
+        r.tick("Running", T0 + 90 + 121)
+        r.line(T0 + 400, "PROGRESS 10/100")
+        kinds = [e["kind"] for e in r.events if progress.wanted(e, "train-42", False)]
+        self.assertEqual(kinds, ["stall"])  # milestones, the stage change and the recovery stay quiet
+        loud = [e["kind"] for e in r.events if progress.wanted(e, "train-42", True)]
+        self.assertTrue({"stage", "milestone", "recovered", "stall"} <= set(loud))
+        self.assertFalse(progress.wanted(r.events[-1], "other-run", True))
+
 
 class Locations(unittest.TestCase):
     def test_state_dir_does_not_depend_on_cwd(self):
@@ -358,6 +371,17 @@ class Locations(unittest.TestCase):
         out = subprocess.run([sys.executable, script, "statusline"], cwd=tempfile.mkdtemp(), env=env,
                              input='{"workspace":{"project_dir":"/elsewhere"}}', capture_output=True, text=True)
         self.assertIn("r1", out.stdout)
+
+    def test_orphaned_run_is_flagged_then_dropped(self):
+        d = Path(tempfile.mkdtemp())
+        progress.ensure_dirs(d)
+        s = progress.new_state("r1")
+        s.update(phase="pending", pending_since=T0, updated_at=T0)
+        progress.write_json(d / "runs" / "r1.json", {"run": "r1", "pid": None})
+        self.assertTrue(progress.shown(d, s, T0 + 120))     # stale, still on screen
+        self.assertFalse(progress.shown(d, s, T0 + 3600))   # poller long dead: dropped
+        progress.write_json(d / "runs" / "r1.json", {"run": "r1", "pid": os.getpid()})
+        self.assertTrue(progress.shown(d, s, T0 + 3600))    # a live poller keeps it
 
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
