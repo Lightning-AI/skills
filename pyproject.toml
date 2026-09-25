@@ -28,7 +28,8 @@ select = [
 known-first-party = ["job_progress"]
 
 [tool.pyright]
-include = ["lightning-jobs", "lightning-blog", "tests", "examples"]
+# the whole repo, so a new skill's scripts are checked too (dot-folders such as .claude/ are skipped)
+include = ["."]
 pythonVersion = "3.9"
 typeCheckingMode = "standard"
 executionEnvironments = [
