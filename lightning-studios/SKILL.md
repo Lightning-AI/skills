@@ -187,6 +187,30 @@ lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
 lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
+**Start a Studio and wait until it can run commands.** `Running` comes before the Studio is
+usable, and `start()` can keep blocking after it is. So poll for readiness with a deadline, rather
+than waiting on `start()`:
+
+```python
+import threading, time
+from lightning_sdk import Studio
+
+studio = Studio("exp-1", teamspace="my-org/my-teamspace", create_ok=True)
+threading.Thread(target=studio.start, daemon=True).start()   # pass machine=... for a GPU
+deadline = time.time() + 600
+while time.time() < deadline:
+    if str(studio.status).endswith("Running"):
+        out, code = studio.run_with_exit_code("python -c pass")   # not `true`: see Gotchas
+        if code == 0 and "setting things up" not in out:
+            break
+    time.sleep(10)
+else:
+    studio.stop()   # stuck in setup: a freshly created Studio is the fix, not another start
+    raise TimeoutError(f"{studio.name} never finished setup")
+studio.upload_file("train.py", "train.py")                  # now it lands on the machine at once
+print(studio.run("cd ~ && env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py"))   # see Gotchas
+```
+
 **SSH in and run scripts interactively** (for a human user; agents should prefer `studio.run*` above since `ssh` opens an interactive shell):
 
 ```bash
@@ -224,5 +248,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
 - **`cloud=` / `--cloud` takes a cloud account *id*.** `Teamspace.cloud_accounts` returns display names such as `Lightning Cloud`, and `Studio(..., cloud="Lightning Cloud")` fails with `400 clusterID Lightning Cloud is invalid`. Use `Teamspace.cloud_account_objs[i].cluster_id` (here `lightning-baremetal`); see *Machine types* for listing each account's machines.
-- **The Studio's `uv` settings don't carry over to jobs launched from it.** In a studio job, `uv run` fails on the Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` (see the `lightning-jobs` skill for the fix).
+- **`uv run` fails in a fresh Studio** (and in jobs launched from one) with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder that doesn't exist yet. Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …`.
+- **`Running` is not ready.** Right after a start, commands can fail with `Error: We are still setting things up for you, please try again after the progress bar at the top of the Studio disappears.` `python`, `pip` and `uv` are shell aliases (`load_conda_and_run`) that refuse until setup is done, while a plain `true` succeeds much earlier, so poll with `studio.run_with_exit_code("python -c pass")` until that text is gone (see *Example workflows*; it took about 80 s on a restarted CPU Studio). When measured, a fresh H200 Studio took about 2 minutes, while another never finished setup across two starts and ~20 minutes of billed H200 time. If setup is still going after several minutes, stop the Studio and create a new one rather than starting it again.
+- **`studio.start()` and `lightning studio start` can block well past readiness**, and in the stuck case above they never returned. Run them in the background and poll, as in the example, rather than waiting on them.
+- **Upload after the Studio is ready, with `studio.upload_file`.** `lightning cp` into a running Studio goes through storage: a file copied during setup wasn't on the machine when it became usable, and appeared about 30 s later. `upload_file` on a ready Studio showed up at once. Check with `studio.run("ls ~")` before running anything that needs the file.
 - In Python, `teamspace=` takes the same `"owner/teamspace"` string as the CLI `--teamspace` flag (for `Teamspace`, `Studio` and `Job`). The separate `org=`/`user=` arguments still work but are deprecated and emit a `DeprecationWarning`; passing both forms raises `ValueError`.

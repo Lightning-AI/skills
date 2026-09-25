@@ -292,11 +292,15 @@ can't return files on their own). Pick `ACCOUNT` and `MACHINE` from the live lis
 *Machines*, and confirm the price with the user first:
 
 ```python
-import time
+import threading, time
 from lightning_sdk import Job, Studio
 
 studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
-studio.start()                                   # CPU is enough: it only holds the files
+threading.Thread(target=studio.start, daemon=True).start()   # CPU is enough: it only holds the files
+# Running is not ready, and start() can block past readiness (lightning-studios skill, Gotchas)
+while not (str(studio.status).endswith("Running")
+           and "setting things up" not in studio.run_with_exit_code("python -c pass")[0]):
+    time.sleep(10)
 studio.upload_file("train.py", "train.py")       # lands in the Studio home, the job's working dir
 job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
               command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
@@ -388,7 +392,7 @@ inspect <name>`, `lightning job logs <name>`.
 - On the raw `lightning api` GET list endpoints (`/jobs`, `/multi-machine-jobs`), do **not** pass `-F limit=…` without `-X GET` — fields with no `-X` make `lightning api` send a POST, and the server 400s with `"spec is required"` (jobs) / `"name is required"` (multi-machine). Call them bare and slice with `-q`. The per-job endpoints take the `job_...` id, not the name; to look one up by name, filter the list (`/jobs/find` returned `501` when last tested).
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
 - **In Python, don't pass `teamspace=` next to a `Studio` object.** `Job.run(studio=s, teamspace="owner/ts")` raises `ValueError: Studio teamspace does not match provided teamspace` even when it is the Studio's own teamspace. Leave `teamspace` out: the job takes it from the Studio.
-- **`uv run` fails inside a studio job** with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder the job machine doesn't have. Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …` (unsetting every `UV_*` variable works too).
+- **`uv run` fails inside a studio job** with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder that doesn't exist there (the same happens inside a fresh Studio). Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …` (unsetting every `UV_*` variable works too).
 - **Pass the `Machine` from `list_machines(cloud_account=…)`, not a name you know from elsewhere.** The same GPU has different names on different accounts (`lit-h200-1` on one, `lit-h200-141gb-1` on another), and a name the job's account doesn't know fails the launch. `Teamspace.cloud_accounts` gives display names such as `Lightning Cloud`; `list_machines()` returns an empty list for those and `Studio(cloud=…)` fails with `clusterID Lightning Cloud is invalid`, so use `Teamspace.cloud_account_objs[i].cluster_id`.
 - **A job goes `Running` → `Pending` → `Completed` (or `Failed`).** The second `Pending`, about 30 s when measured, is the platform saving the job's outputs after the command exits, not a retry. Don't stop the job then; wait with `job.wait()`, which returns only on a terminal state.
 - **`job.logs` is not a string.** `print(job.logs)` works, but slicing it (`job.logs[-2000:]`) raises `TypeError: '_Logs' object is not subscriptable`. Use `lightning job logs <name> --tail N` for the end of a log.
