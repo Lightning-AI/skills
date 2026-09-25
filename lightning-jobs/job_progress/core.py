@@ -10,6 +10,8 @@ ENTRY_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 BAR_WIDTH = 20
 FINAL_PHASES = ("done", "failed", "stopped", "abandoned")
+# one attempt failed and the run waits for a relaunch; not final, so a Monitor keeps running
+ATTEMPT_FAILED = "attempt-failed"
 STUDIO_HOME = "/teamspace/studios/this_studio"
 STATE_STALE_AFTER = 60.0
 FINAL_VISIBLE_FOR = 600.0

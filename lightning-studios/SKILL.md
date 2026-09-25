@@ -361,8 +361,9 @@ lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 **Show the user live progress, don't hand-roll it.** Once the run is detached, start the
 `lightning-jobs` skill's `progress.py` (its *Live progress, ETA and setbacks* section) on the
 Studio and the log. It gives the user a status-line bar, an ETA and setback tracking; printing
-log lines from the loop above, or asking them to `tail -f` a file, does not. Paths are relative
-to the Studio's home:
+log lines from the loop above, or asking them to `tail -f` a file, does not.
+`<LIGHTNING_JOBS_SKILL_DIR>` is the `lightning-jobs` folder next to this skill's own base
+directory. Paths are relative to the Studio's home:
 
 ```bash
 python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace

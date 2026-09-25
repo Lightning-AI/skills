@@ -15,10 +15,11 @@ instead of starting a second one.
 
 `events` prints the events that need the agent (stalls, setbacks, failures, final state) and is
 meant as a Claude Code Monitor command. `statusline` draws the bars for the Claude Code status
-line and makes no network calls.
+line. Both only read files and make no network calls, so they work inside an agent sandbox.
 
-State lives in $LIGHTNING_PROGRESS_DIR, default ~/.local/state/lightning-progress: one place
-per user, so the poller, the Monitor and the status line agree whatever directory each runs in.
+State lives in `--dir`, else $LIGHTNING_PROGRESS_DIR, else ~/.local/state/lightning-progress:
+one place per user, so the poller, the Monitor and the status line agree whatever directory each
+runs in. Only `watch` writes it.
 Only `watch` needs lightning_sdk; everything else is standard library. The code lives in the
 job_progress package next to this file; each command loads only its own module.
 """
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import sys
 
 from job_progress.core import STUDIO_HOME
@@ -34,6 +36,11 @@ from job_progress.core import STUDIO_HOME
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--dir",
+        help="state folder, shared by every command (default: $LIGHTNING_PROGRESS_DIR, "
+        "else ~/.local/state/lightning-progress)",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     w = sub.add_parser("watch", help="follow a job's or Studio log's progress (run in the background)")
@@ -80,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
     s.set_defaults(module="statusline", fn="cmd_statusline")
 
     args = ap.parse_args(argv)
+    if args.dir:
+        os.environ["LIGHTNING_PROGRESS_DIR"] = args.dir
     # import only the command's module, so the status line never loads the poller or the SDK
     return getattr(importlib.import_module(f"job_progress.{args.module}"), args.fn)(args)
 

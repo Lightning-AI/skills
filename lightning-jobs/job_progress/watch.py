@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .core import ENTRY_SCRIPT, FINAL_PHASES, STUDIO_HOME, fmt_duration, make_event, pct
+from .core import ATTEMPT_FAILED, ENTRY_SCRIPT, FINAL_PHASES, STUDIO_HOME, fmt_duration, make_event, pct
 from .settings import statusline_hint
 from .store import append_events, ensure_dirs, pid_alive, progress_dir, read_json, session_dir, write_json
 from .tracker import (
@@ -231,7 +231,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             save(
                 [
                     make_event(
-                        "failed",
+                        ATTEMPT_FAILED,
                         run,
                         f"{entry['name']} failed at {pct(state['step'], state['total']) or 0}%"
                         + (f" · {cause}" if cause else "")
@@ -432,7 +432,7 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
                     save(
                         [
                             make_event(
-                                "failed",
+                                ATTEMPT_FAILED,
                                 state["run"],
                                 f"{name} exited ({exit_code}) at "
                                 f"{pct(state['step'], state['total']) or 0}%"

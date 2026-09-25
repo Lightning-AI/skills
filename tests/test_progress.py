@@ -311,6 +311,30 @@ class LiveRunFindings(unittest.TestCase):
         self.assertIn("ETA", rows[3])
         self.assertEqual(len(statusline.render_rows(r.s, T0 + 460, expand=False)), 1)
 
+    def test_a_stage_with_no_reading_yet_says_so(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup 1/2")
+        r.line(T0 + 60, "PROGRESS_PHASE train 2/2")  # model loading: no PROGRESS line yet
+        self.assertIn("▸ train  no progress reported yet · 2m00s", statusline.render_rows(r.s, T0 + 180)[2])
+
+    def test_a_new_tqdm_bar_in_the_same_attempt_is_not_a_setback(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE eval")
+        for shots in range(2):  # lm-eval: one bar for 0-shot, then a new one for 5-shot
+            for i in range(0, 1320, 330):
+                r.line(T0 + 100 * shots + i / 10, f"Processed prompts: {i * 100 // 1319}%|█| {i}/1319")
+        self.assertEqual(r.s["setbacks"], [])
+        self.assertNotIn("setback", r.kinds())
+        self.assertEqual(r.s["peak"], r.s["step"])  # no ▒ left over from the first bar
+
+    def test_a_tqdm_drop_after_a_relaunch_is_a_setback(self):
+        r = Run()
+        for i in range(0, 60, 10):
+            r.line(T0 + i, f"{i}%|█| {i}/100")
+        tracker.end_attempt(r.s, T0 + 70)  # the job failed and was relaunched
+        r.line(T0 + 200, " 30%|█| 30/100")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
+
     def test_rows_hide_earlier_attempts(self):
         r = Run()
         r.line(T0 + 1, "PROGRESS_PHASE train")
@@ -342,6 +366,45 @@ class LiveRunFindings(unittest.TestCase):
             ["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}', capture_output=True, text=True, env=env
         ).stdout
         self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
+
+    def test_config_carries_a_custom_state_folder(self):
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        s = tracker.new_state("r1")
+        s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
+        store.write_json(d / "state" / "r1.json", s)
+        with mock.patch.dict(os.environ, LIGHTNING_PROGRESS_DIR=str(d)):
+            cmd = settings.statusline_snippet(None)["statusLine"]["command"]
+        self.assertIn("--dir", cmd)
+        # the status line runs without the session's environment, and still finds the run
+        env = {k: v for k, v in os.environ.items() if k != "LIGHTNING_PROGRESS_DIR"}
+        out = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env).stdout
+        self.assertIn("r1", out)
+
+    def test_events_only_read_and_outlive_a_failed_attempt(self):
+        d = Path(tempfile.mkdtemp()) / "not-yet"  # a sandboxed Monitor can't create this
+        proc = subprocess.Popen(
+            [sys.executable, str(ENTRY), "--dir", str(d), "events", "--run", "r"],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            time.sleep(1)
+            self.assertIsNone(proc.poll())  # waiting for the poller, not crashed
+            self.assertFalse(d.exists())  # and it wrote nothing
+            store.ensure_dirs(d)
+            store.append_events(
+                d,
+                [
+                    core.make_event("hint", "r", "status-line bar is not set up", T0),
+                    core.make_event(core.ATTEMPT_FAILED, "r", "attempt 1 failed", T0),
+                    core.make_event("done", "r", "done in 5m", T0),
+                ],
+            )
+            out, _ = proc.communicate(timeout=10)
+        finally:
+            proc.kill()
+        self.assertEqual(out.splitlines(), ["r: status-line bar is not set up", "r: attempt 1 failed", "r: done in 5m"])
 
     def test_events_pass_on_only_what_needs_a_reply(self):
         r = Run()
@@ -487,8 +550,9 @@ class StudioMode(unittest.TestCase):
         )
         kinds = [e["kind"] for e in events]
         self.assertEqual(outcome, "Completed")
-        self.assertIn("failed", kinds)
-        failed = next(e for e in events if e["kind"] == "failed")
+        self.assertIn(core.ATTEMPT_FAILED, kinds)
+        self.assertNotIn("failed", kinds)  # the final kind, which would end a Monitor
+        failed = next(e for e in events if e["kind"] == core.ATTEMPT_FAILED)
         self.assertIn("soundfile", failed["msg"])
         self.assertIn("relaunch", kinds)
         self.assertEqual(state["setbacks"][-1]["kind"], "restart")
@@ -514,7 +578,7 @@ class StudioMode(unittest.TestCase):
             ]
         )
         self.assertEqual(outcome, "Completed")
-        self.assertIn("exited (137)", next(e["msg"] for e in events if e["kind"] == "failed"))
+        self.assertIn("exited (137)", next(e["msg"] for e in events if e["kind"] == core.ATTEMPT_FAILED))
         self.assertEqual(state["setbacks"][-1]["kind"], "resume")
 
     def test_missing_log_is_pending(self):

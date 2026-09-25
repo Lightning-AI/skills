@@ -25,7 +25,11 @@ def statusline_setting(project_dir: str) -> tuple[str | None, str | None]:
 
 
 def statusline_snippet(existing: str | None) -> dict[str, Any]:
-    ours = f"python3 {shlex.quote(ENTRY_SCRIPT)} statusline"
+    ours = f"python3 {shlex.quote(ENTRY_SCRIPT)}"
+    custom = os.environ.get("LIGHTNING_PROGRESS_DIR")
+    if custom:  # the status line doesn't inherit the session's environment, so name the folder
+        ours += f" --dir {shlex.quote(os.path.abspath(custom))}"
+    ours += " statusline"
     if existing and "progress.py" not in existing:
         # keep the user's own status line: feed the same input to both, theirs first
         both = 'in=$(cat); printf %s "$in" | ' + existing + '; printf %s "$in" | ' + ours
