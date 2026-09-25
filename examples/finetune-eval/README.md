@@ -2,8 +2,8 @@
 
 Start with a ready-made training script and one chat message. Claude Code prices the run, launches
 it on an H200, and comes back with how well a 4B base model picks and fills in tool calls, before
-and after training. The GPU part takes about 6 minutes and costs under $1. From message to results usually takes
-10–15 minutes, depending mostly on how long the cloud machine takes to get ready.
+and after training. The GPU part takes about 6 minutes and costs under $1. From message to results
+usually takes 10–15 minutes, depending mostly on how long the cloud machine takes to get ready.
 
 ```mermaid
 flowchart LR
