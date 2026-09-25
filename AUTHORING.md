@@ -153,27 +153,9 @@ Keep changes scoped to one skill per PR where you can; it makes review and
 ## Python checks
 
 Skills that ship scripts (`lightning-jobs/progress.py`, `lightning-blog/md2blocks.py`)
-are checked on every PR, and each check is required to merge:
-
-| Check | What it catches |
-|---|---|
-| `ruff-check`, `ruff-format` | lint errors and formatting |
-| `pyright` | type errors |
-| `pydoclint` | docstrings whose Args/Returns sections disagree with the signature |
-| `import-linter` | `job_progress` modules importing across their layers, or the SDK outside the poller |
-| `tests (python 3.9)`, `tests (python 3.13)` | the unit tests, on macOS's system Python and a current one |
-
-Run the same checks locally before you push. Tool versions live in
-`.pre-commit-config.yaml` and settings in `pyproject.toml`:
-
-```bash
-uvx pre-commit install                       # once per clone: checks run on every commit
-uvx pre-commit run --all-files               # or run them all by hand
-python3 -m unittest discover -s tests
-```
-
-Scripts must keep running on Python 3.9: they run under whatever `python3` the user
-has, and ruff targets 3.9 so newer syntax fails the lint.
+are linted, type-checked and tested on every PR. [AGENTS.md](AGENTS.md) covers setting
+up the checks locally with pre-commit, and the rules scripts follow: standard library only,
+Python 3.9 or newer, and every platform Claude Code runs on.
 
 ## Open a PR
 
