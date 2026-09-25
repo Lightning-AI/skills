@@ -28,12 +28,11 @@ from __future__ import annotations
 import argparse
 import importlib
 import sys
-from typing import List, Optional
 
 from job_progress.core import STUDIO_HOME
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -44,10 +43,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     w.add_argument("--run", help="run this belongs to (default: the job name, or the log file's stem)")
     w.add_argument("--teamspace", help="owner/teamspace (default: the CLI's configured teamspace)")
     w.add_argument("--note", help="why this job was (re)launched, shown in the run history")
-    w.add_argument("--query", help="server-side log filter, e.g. PROGRESS for very chatty jobs "
-                                   "(hides error lines from stall causes)")
-    w.add_argument("--relaunch-wait", type=float, default=1800.0,
-                   help="seconds a failed run waits for a relaunch before it is final (default 1800)")
+    w.add_argument(
+        "--query",
+        help="server-side log filter, e.g. PROGRESS for very chatty jobs (hides error lines from stall causes)",
+    )
+    w.add_argument(
+        "--relaunch-wait",
+        type=float,
+        default=1800.0,
+        help="seconds a failed run waits for a relaunch before it is final (default 1800)",
+    )
     w.set_defaults(module="watch", fn="cmd_watch")
 
     a = sub.add_parser("abandon", help="end a failed run's wait for a relaunch")
@@ -58,14 +63,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     e = sub.add_parser("events", help="print notable events as they happen (for a Monitor)")
     e.add_argument("--run", help="only this run; exit once it reaches a final state")
     e.add_argument("--from-start", action="store_true", help="replay earlier events first")
-    e.add_argument("--all", action="store_true",
-                   help="also print routine progress (milestones, stage changes); for sessions "
-                        "without the status-line bar, such as the desktop app")
+    e.add_argument(
+        "--all",
+        action="store_true",
+        help="also print routine progress (milestones, stage changes); for sessions "
+        "without the status-line bar, such as the desktop app",
+    )
     e.set_defaults(module="events", fn="cmd_events")
 
     s = sub.add_parser("statusline", help="render progress bars for the Claude Code status line")
-    s.add_argument("--config", action="store_true",
-                   help="print the statusLine setting to add (run from the directory Claude Code was started in)")
+    s.add_argument(
+        "--config",
+        action="store_true",
+        help="print the statusLine setting to add (run from the directory Claude Code was started in)",
+    )
     s.set_defaults(module="statusline", fn="cmd_statusline")
 
     args = ap.parse_args(argv)

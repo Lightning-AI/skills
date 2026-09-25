@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from statistics import median
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .core import fmt_duration, make_event, pct
 
@@ -29,7 +29,7 @@ ERROR_RE = re.compile(
 )
 
 
-def split_timestamp(text: str) -> Tuple[Optional[float], str]:
+def split_timestamp(text: str) -> tuple[float | None, str]:
     """Strip the ISO-8601 prefix `job.logs(timestamps=True)` adds; return (epoch seconds, rest)."""
     head, _, rest = text.partition(" ")
     if head[:1].isdigit() and "T" in head:
@@ -40,7 +40,7 @@ def split_timestamp(text: str) -> Tuple[Optional[float], str]:
     return None, text
 
 
-def parse_progress(message: str) -> Optional[Dict[str, Any]]:
+def parse_progress(message: str) -> dict[str, Any] | None:
     """Return {step, total, attempt, epoch, source} from the last progress reading in a line.
 
     tqdm redraws with carriage returns, so one log line can hold many readings: the last wins.
@@ -68,7 +68,7 @@ def parse_progress(message: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def parse_error(message: str) -> Optional[str]:
+def parse_error(message: str) -> str | None:
     if "Traceback (most recent call last)" in message:
         return None  # the line after it names the actual error
     if WARN_RE.search(message):
@@ -77,7 +77,7 @@ def parse_error(message: str) -> Optional[str]:
     return message.strip()[:120] if m else None
 
 
-def new_state(run: str) -> Dict[str, Any]:
+def new_state(run: str) -> dict[str, Any]:
     return {
         "run": run,
         "job": None,
@@ -124,7 +124,7 @@ def new_state(run: str) -> Dict[str, Any]:
     }
 
 
-def _progress_text(s: Dict[str, Any]) -> str:
+def _progress_text(s: dict[str, Any]) -> str:
     p = pct(s["step"], s["total"])
     parts = [f"{p}%" if p is not None else "starting"]
     if s.get("stage"):
@@ -136,14 +136,13 @@ def _progress_text(s: Dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def recent_cause(s: Dict[str, Any], since: Optional[float]) -> Optional[str]:
-    if s["last_error"] and s["last_error_at"] is not None:
-        if since is None or s["last_error_at"] >= since - 60:
-            return s["last_error"]
+def recent_cause(s: dict[str, Any], since: float | None) -> str | None:
+    if s["last_error"] and s["last_error_at"] is not None and (since is None or s["last_error_at"] >= since - 60):
+        return s["last_error"]
     return None
 
 
-def on_line(s: Dict[str, Any], job: str, text: str, wall_now: float, dedupe: bool = True) -> List[Dict[str, Any]]:
+def on_line(s: dict[str, Any], job: str, text: str, wall_now: float, dedupe: bool = True) -> list[dict[str, Any]]:
     """Feed one log line. With `dedupe`, replayed history (a follow reconnect) is dropped by timestamp."""
     ts, message = split_timestamp(text) if dedupe else (None, text)
     if ts is not None:
@@ -166,15 +165,15 @@ def on_line(s: Dict[str, Any], job: str, text: str, wall_now: float, dedupe: boo
     return on_sample(s, reading, at)
 
 
-def stage_summary(s: Dict[str, Any], until: float) -> str:
+def stage_summary(s: dict[str, Any], until: float) -> str:
     parts = []
-    for i, st in enumerate(s.get("stages") or []):
+    for st in s.get("stages") or []:
         end = st["end"] if st["end"] is not None else until
         parts.append(f"{st['name']} {fmt_duration(end - st['start'])}")
     return ", ".join(parts)
 
 
-def close_stage(s: Dict[str, Any], at: float) -> None:
+def close_stage(s: dict[str, Any], at: float) -> None:
     """End the current stage without starting another."""
     if s["stage"] is not None:
         s["stage_snap"][s["stage"]] = {k: s[k] for k in PROGRESS_KEYS}
@@ -183,7 +182,7 @@ def close_stage(s: Dict[str, Any], at: float) -> None:
         s["stages"][-1]["end"] = at
 
 
-def end_attempt(s: Dict[str, Any], at: float) -> None:
+def end_attempt(s: dict[str, Any], at: float) -> None:
     """Close the attempt. Remember the stage it broke in: that stage is the only one a relaunch is
     compared with, since only there was ground lost. The attempt's last error moves aside, so it
     explains the setback but is never blamed for anything the next attempt does."""
@@ -194,8 +193,9 @@ def end_attempt(s: Dict[str, Any], at: float) -> None:
     s["attempt_no"] = s.get("attempt_no", 1) + 1
 
 
-def on_stage(s: Dict[str, Any], name: str, at: float,
-             index: Optional[int] = None, count: Optional[int] = None) -> List[Dict[str, Any]]:
+def on_stage(
+    s: dict[str, Any], name: str, at: float, index: int | None = None, count: int | None = None
+) -> list[dict[str, Any]]:
     """Switch to a named stage. Each stage keeps its own bar; re-entering one resumes its bar,
     so a relaunched attempt that trains again is compared with the old training progress.
     `PROGRESS_PHASE eval 3/4` also gives the stage's place in the job, for a whole-job bar."""
@@ -212,7 +212,7 @@ def on_stage(s: Dict[str, Any], name: str, at: float,
     snap = s["stage_snap"].get(name) if name == s.get("fail_stage") else None
     if snap is not None:
         s["fail_stage"] = None
-    s.update({k: None for k in PROGRESS_KEYS})
+    s.update(dict.fromkeys(PROGRESS_KEYS))
     s["milestone"] = 0
     if snap:
         s.update(snap)
@@ -227,7 +227,7 @@ def on_stage(s: Dict[str, Any], name: str, at: float,
     return [make_event("stage", s["run"], msg, at)]
 
 
-def on_partial(s: Dict[str, Any], text: str, now: float) -> List[Dict[str, Any]]:
+def on_partial(s: dict[str, Any], text: str, now: float) -> list[dict[str, Any]]:
     """Read progress from a log's unfinished last line (tqdm redraws with \\r and no newline)."""
     reading = parse_progress(text)
     if reading is None or (s["source"] == "progress" and reading["source"] == "tqdm"):
@@ -243,14 +243,14 @@ class LogTail:
     def __init__(self) -> None:
         self.buf = b""
 
-    def feed(self, chunk: bytes) -> Tuple[List[str], str]:
+    def feed(self, chunk: bytes) -> tuple[list[str], str]:
         *lines, self.buf = (self.buf + chunk).split(b"\n")
         if len(self.buf) > 65536:  # a tqdm bar that never ends its line: keep the latest redraws
             self.buf = self.buf[-65536:]
         return [ln.decode("utf-8", "replace") for ln in lines], self.buf.decode("utf-8", "replace")
 
 
-def _classify(s: Dict[str, Any], r: Dict[str, Any]) -> Optional[str]:
+def _classify(s: dict[str, Any], r: dict[str, Any]) -> str | None:
     if s["step"] is None:
         return None
     if r["source"] != s["source"]:
@@ -268,8 +268,8 @@ def _classify(s: Dict[str, Any], r: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
+def on_sample(s: dict[str, Any], r: dict[str, Any], at: float) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     run = s["run"]
     if s["source"] == "tqdm" and r["source"] == "progress":
         s.update(step=None, total=None, peak=None, epoch=None, samples=[], since_reset=0)
@@ -281,8 +281,16 @@ def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str,
         cause = recent_cause(s, s["issue_since"]) or s.get("prev_error")
         s["prev_error"] = None
         s["setbacks"].append(
-            {"at": at, "kind": kind, "from": s["step"], "to": r["step"], "peak": s["peak"],
-             "cause": cause, "lost_s": lost, "job": s["job"]}
+            {
+                "at": at,
+                "kind": kind,
+                "from": s["step"],
+                "to": r["step"],
+                "peak": s["peak"],
+                "cause": cause,
+                "lost_s": lost,
+                "job": s["job"],
+            }
         )
         s["lost_s"] += lost
         s["samples"], s["since_reset"], s["eta_s"], s["rate"] = [], 0, None, None
@@ -295,8 +303,11 @@ def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str,
             "restart": "setback: restarted from scratch",
             "new-setup": f"restarted with a new setup ({r['total']} steps)",
         }[kind]
-        events.append(make_event("setback", run, f"{what} · {fmt_duration(lost)} lost"
-                             + (f" · cause: {cause}" if cause else ""), at))
+        events.append(
+            make_event(
+                "setback", run, f"{what} · {fmt_duration(lost)} lost" + (f" · cause: {cause}" if cause else ""), at
+            )
+        )
     elif s["phase"] == "stalled" and s["issue_since"] is not None:
         stalled = max(0.0, at - s["issue_since"])
         s["lost_s"] += stalled
@@ -306,8 +317,9 @@ def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str,
         s["gaps"] = (s["gaps"] + [at - s["last_sample_at"]])[-20:]
     if r["epoch"] != s["epoch"]:
         s["samples"] = []  # a new epoch restarts a per-epoch bar; that is not a setback
-    s.update(step=r["step"], total=r["total"], epoch=r["epoch"], source=r["source"],
-             last_sample_at=at, issue_since=None)
+    s.update(
+        step=r["step"], total=r["total"], epoch=r["epoch"], source=r["source"], last_sample_at=at, issue_since=None
+    )
     if r["attempt"] is not None:
         s["attempt"] = r["attempt"]
     if s["peak"] is None or (r["epoch"] or 0, r["step"]) > (s["peak_epoch"] or 0, s["peak"]):
@@ -332,13 +344,13 @@ def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str,
     return events
 
 
-def stall_threshold(s: Dict[str, Any]) -> float:
+def stall_threshold(s: dict[str, Any]) -> float:
     return max(120.0, 4 * median(s["gaps"])) if s["gaps"] else 300.0
 
 
-def on_tick(s: Dict[str, Any], status: str, platform_attempt: Optional[int], now: float) -> List[Dict[str, Any]]:
+def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: float) -> list[dict[str, Any]]:
     """Periodic check from the supervisor: status changes, platform retries and stalls."""
-    events: List[Dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
     run, prev = s["run"], s["status"]
     s["status"] = status
 
@@ -366,11 +378,9 @@ def on_tick(s: Dict[str, Any], status: str, platform_attempt: Optional[int], now
             s["phase"] = "starting" if s["step"] is None else "recovering"
             if s["step"] is None:
                 events.append(make_event("started", run, "running", now))
-        if s["phase"] == "starting" and s["started_at"] and not s["no_progress_warned"] \
-                and now - s["started_at"] > 600:
+        if s["phase"] == "starting" and s["started_at"] and not s["no_progress_warned"] and now - s["started_at"] > 600:
             s["no_progress_warned"] = True
-            events.append(make_event("no-progress", run,
-                                 "running 10m with no PROGRESS or tqdm line yet", now))
+            events.append(make_event("no-progress", run, "running 10m with no PROGRESS or tqdm line yet", now))
         bar_open = s["step"] is not None and s["total"] and s["step"] < s["total"]
         if s["phase"] in ("running", "recovering") and s["last_sample_at"] is not None and bar_open:
             # after a relaunch or requeue, give the new process time to start before calling it stalled
@@ -380,12 +390,19 @@ def on_tick(s: Dict[str, Any], status: str, platform_attempt: Optional[int], now
                 s["phase"] = "stalled"
                 s["issue_since"] = s["issue_since"] or s["last_sample_at"]
                 cause = recent_cause(s, s["last_sample_at"])
-                events.append(make_event("stall", run, f"stalled {fmt_duration(quiet)} at "
-                                     f"{pct(s['step'], s['total'])}%" + (f" · {cause}" if cause else ""), now))
+                events.append(
+                    make_event(
+                        "stall",
+                        run,
+                        f"stalled {fmt_duration(quiet)} at "
+                        f"{pct(s['step'], s['total'])}%" + (f" · {cause}" if cause else ""),
+                        now,
+                    )
+                )
     return events
 
 
-def finish(s: Dict[str, Any], phase: str, now: float) -> Dict[str, Any]:
+def finish(s: dict[str, Any], phase: str, now: float) -> dict[str, Any]:
     s["phase"], s["finished_at"], s["eta_s"] = phase, now, None
     run, p = s["run"], pct(s["step"], s["total"])
     start = s["started_at"] or now

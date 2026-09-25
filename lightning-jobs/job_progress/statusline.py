@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .core import FINAL_PHASES, FINAL_VISIBLE_FOR, STATE_STALE_AFTER, bar, fmt_duration, pct
 from .settings import SETTINGS_FILES, statusline_setting, statusline_snippet
@@ -17,11 +17,11 @@ from .store import pid_alive, progress_dir, read_json, session_dir
 MAX_STATUS_ROWS = 10
 
 
-def stage_track(s: Dict[str, Any], now: float, keep: int = 3) -> str:
+def stage_track(s: dict[str, Any], now: float, keep: int = 3) -> str:
     """`setup ✔ 1m05s · train ✔ 9m40s · ▸ eval_ft 4m32s`: the last few stages and the current one."""
     stages = s.get("stages") or []
     parts = []
-    for st in stages[-(keep + 1):]:
+    for st in stages[-(keep + 1) :]:
         if st["end"] is None:
             parts.append(f"▸ {st['name']} {fmt_duration(now - st['start'])}")
         else:
@@ -31,7 +31,7 @@ def stage_track(s: Dict[str, Any], now: float, keep: int = 3) -> str:
     return " · ".join(parts)
 
 
-def job_fraction(s: Dict[str, Any]) -> Optional[float]:
+def job_fraction(s: dict[str, Any]) -> float | None:
     """Finished stages plus the current stage's own fraction, over the declared stage count."""
     count = s.get("stage_count")
     if not count:
@@ -40,7 +40,7 @@ def job_fraction(s: Dict[str, Any]) -> Optional[float]:
     return max(0.0, min(1.0, ((s.get("stage_index") or 1) - 1 + min(frac, 1.0)) / count))
 
 
-def render_rows(s: Dict[str, Any], now: float, expand: bool = True) -> List[str]:
+def render_rows(s: dict[str, Any], now: float, expand: bool = True) -> list[str]:
     """A running run with stages: a header row with the whole-job bar, then one row per stage of
     the current attempt. Anything else, or `expand=False`, is the single summary line."""
     stages = [st for st in s.get("stages") or [] if st.get("attempt", 1) == s.get("attempt_no", 1)]
@@ -48,8 +48,9 @@ def render_rows(s: Dict[str, Any], now: float, expand: bool = True) -> List[str]
         return [render_line(s, now)]
     since = lambda t: fmt_duration(now - t) if t else "…"  # noqa: E731
     phase, attempt = s["phase"], s.get("attempt_no", 1)
-    icon = {"pending": "⏳", "starting": "▶", "running": "▶", "recovering": "⟳", "stalled": "⚠",
-            "waiting": "✖"}.get(phase, "?")
+    icon = {"pending": "⏳", "starting": "▶", "running": "▶", "recovering": "⟳", "stalled": "⚠", "waiting": "✖"}.get(
+        phase, "?"
+    )
     head = f"{icon} {s['run']}"
     frac = job_fraction(s)
     if frac is not None:
@@ -97,16 +98,25 @@ def render_rows(s: Dict[str, Any], now: float, expand: bool = True) -> List[str]
         if left > 0:
             rows.append(f"   · {left} more stage{'s' if left > 1 else ''}")
     stale = s["updated_at"] and now - s["updated_at"] > STATE_STALE_AFTER
-    return [f"\033[2m{r} · stale (poller not running?)\033[0m" if stale and i == 0 else r
-            for i, r in enumerate(rows)]
+    return [f"\033[2m{r} · stale (poller not running?)\033[0m" if stale and i == 0 else r for i, r in enumerate(rows)]
 
 
-def render_line(s: Dict[str, Any], now: float) -> str:
+def render_line(s: dict[str, Any], now: float) -> str:
     phase, run = s["phase"], s["run"]
     step, total = s["step"], s["total"]
     peak = s["peak"] if s.get("peak_epoch") == s["epoch"] else step
-    icon = {"pending": "⏳", "starting": "▶", "running": "▶", "recovering": "⟳", "stalled": "⚠",
-            "waiting": "✖", "done": "✔", "failed": "✖", "stopped": "■", "abandoned": "✖"}.get(phase, "?")
+    icon = {
+        "pending": "⏳",
+        "starting": "▶",
+        "running": "▶",
+        "recovering": "⟳",
+        "stalled": "⚠",
+        "waiting": "✖",
+        "done": "✔",
+        "failed": "✖",
+        "stopped": "■",
+        "abandoned": "✖",
+    }.get(phase, "?")
     stage = s.get("stage")
     live = phase not in FINAL_PHASES
     stage_only = bool(stage) and not total and phase in ("starting", "running", "recovering")
@@ -154,7 +164,7 @@ def render_line(s: Dict[str, Any], now: float) -> str:
     return line
 
 
-def shown(d: Path, s: Dict[str, Any], now: float) -> bool:
+def shown(d: Path, s: dict[str, Any], now: float) -> bool:
     """Finished runs linger for a while. So do orphans, runs whose poller died before they
     finished: flagged as stale at first, then dropped, since nothing will ever finish them."""
     if s["phase"] in FINAL_PHASES:
@@ -169,9 +179,17 @@ def cmd_statusline(args: argparse.Namespace) -> int:
         project_dir = session_dir()
         path, cmd = statusline_setting(project_dir)
         print(json.dumps(statusline_snippet(cmd), indent=2))
-        print(f"# merge into {os.path.join(project_dir, SETTINGS_FILES[0])}"
-              + (f"; replaces the status line set in {path}, and still runs it" if cmd and "progress.py" not in cmd
-                 else "; already set up" if cmd else ""), file=sys.stderr)
+        print(
+            f"# merge into {os.path.join(project_dir, SETTINGS_FILES[0])}"
+            + (
+                f"; replaces the status line set in {path}, and still runs it"
+                if cmd and "progress.py" not in cmd
+                else "; already set up"
+                if cmd
+                else ""
+            ),
+            file=sys.stderr,
+        )
         return 0
     if not sys.stdin.isatty():
         sys.stdin.read()  # Claude Code sends session JSON; the bars don't depend on it
@@ -180,7 +198,7 @@ def cmd_statusline(args: argparse.Namespace) -> int:
     states = [s for s in (read_json(p) for p in sorted((d / "state").glob("*.json"))) if s]
     visible = [s for s in states if shown(d, s, now)]
     visible.sort(key=lambda s: (s["phase"] in FINAL_PHASES, -(s.get("updated_at") or 0)))
-    rows: List[str] = []
+    rows: list[str] = []
     for i, s in enumerate(visible[:5]):
         # expand the two most recently active runs; the rest stay one line each
         out = render_rows(s, now, expand=i < 2)

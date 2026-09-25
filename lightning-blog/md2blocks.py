@@ -21,6 +21,7 @@ import html
 import json
 import re
 import sys
+from pathlib import Path
 
 INLINE_CODE = re.compile(r"`([^`]+)`")
 BOLD = re.compile(r"\*\*([^*]+)\*\*")
@@ -128,16 +129,14 @@ class Converter:
         while i < len(lines) and not FENCE.match(lines[i]):
             body.append(lines[i])
             i += 1
-        self.blocks.append(
-            {"type": "code", "data": {"code": "\n".join(body), "language": language or "python"}}
-        )
+        self.blocks.append({"type": "code", "data": {"code": "\n".join(body), "language": language or "python"}})
         return i + 1
 
     def table(self, lines: list[str], i: int) -> int:
         rows: list[list[str]] = []
-        while i < len(lines) and TABLE_ROW.match(lines[i]):
+        while i < len(lines) and (row := TABLE_ROW.match(lines[i])):
             if not TABLE_SEP.match(lines[i]):
-                cells = TABLE_ROW.match(lines[i]).group(1).split("|")
+                cells = row.group(1).split("|")
                 rows.append([inline(c.strip()) for c in cells])
             i += 1
         self.blocks.append({"type": "table", "data": {"withHeadings": True, "content": rows}})
@@ -189,17 +188,15 @@ class Converter:
             depth += len(re.findall(r"<(figure|svg|div|table)\b", lines[i]))
             depth -= len(re.findall(r"</(figure|svg|div|table)>", lines[i]))
             i += 1
-            if depth <= 0 and (not lines[i - 1].strip() or depth == 0 and chunk[0].lstrip().startswith("<")):
-                if depth <= 0:
-                    break
+            if depth <= 0 and (not lines[i - 1].strip() or (depth == 0 and chunk[0].lstrip().startswith("<"))):
+                break
         blob = "\n".join(chunk)
         if "<svg" in blob or "<img" in blob or "<figure" in blob:
             self.figures += 1
             title = SVG_TITLE.search(blob)
             self.image("", title.group(1).strip() if title else "")
             self.notes.append(
-                f"figure {self.figures}: rasterize the SVG, upload it, patch image block "
-                f"{len(self.blocks) - 1}"
+                f"figure {self.figures}: rasterize the SVG, upload it, patch image block {len(self.blocks) - 1}"
             )
         else:
             self.notes.append(f"dropped raw HTML near line {i}: {blob.splitlines()[0][:60]}")
@@ -229,12 +226,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", help='Markdown file, or "-" for stdin')
     parser.add_argument("--keep-title", action="store_true", help="keep the leading H1 as a block")
-    parser.add_argument(
-        "--section-level", type=int, default=1, help="header level for '##' sections (default 1)"
-    )
+    parser.add_argument("--section-level", type=int, default=1, help="header level for '##' sections (default 1)")
     args = parser.parse_args()
 
-    text = sys.stdin.read() if args.path == "-" else open(args.path).read()
+    text = sys.stdin.read() if args.path == "-" else Path(args.path).read_text()
     converter = Converter(args.keep_title, args.section_level)
     print(json.dumps(converter.convert(text), indent=1))
 

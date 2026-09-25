@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 # the command-line entry point; the status-line setting and the SDK re-exec both run it
 ENTRY_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "progress.py")
@@ -15,10 +15,10 @@ STATE_STALE_AFTER = 60.0
 FINAL_VISIBLE_FOR = 600.0
 
 
-def fmt_duration(seconds: Optional[float]) -> str:
+def fmt_duration(seconds: float | None) -> str:
     if seconds is None:
         return "…"
-    s = max(0, int(round(seconds)))
+    s = max(0, round(seconds))
     if s < 60:
         return f"{s}s"
     if s < 3600:
@@ -26,7 +26,7 @@ def fmt_duration(seconds: Optional[float]) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def pct(step: Optional[int], total: Optional[int]) -> Optional[int]:
+def pct(step: int | None, total: int | None) -> int | None:
     if step is None or not total:
         return None
     return max(0, min(100, int(100 * step / total)))
@@ -39,5 +39,5 @@ def bar(step: int, peak: int, total: int, width: int = BAR_WIDTH) -> str:
     return "▓" * cur + "▒" * (top - cur) + "░" * (width - top)
 
 
-def make_event(kind: str, run: str, msg: str, at: float) -> Dict[str, Any]:
+def make_event(kind: str, run: str, msg: str, at: float) -> dict[str, Any]:
     return {"ts": at, "run": run, "kind": kind, "msg": f"{run}: {msg}"}
