@@ -6,7 +6,7 @@ import argparse
 import json
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .core import FINAL_PHASES
 from .store import ensure_dirs, progress_dir
@@ -15,7 +15,7 @@ from .store import ensure_dirs, progress_dir
 ROUTINE_KINDS = ("milestone", "stage", "started", "recovered")
 
 
-def wanted(e: Dict[str, Any], run: Optional[str], all_kinds: bool) -> bool:
+def wanted(e: dict[str, Any], run: str | None, all_kinds: bool) -> bool:
     if run and e.get("run") != run:
         return False
     return all_kinds or e.get("kind") not in ROUTINE_KINDS
