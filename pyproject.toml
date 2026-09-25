@@ -1,0 +1,80 @@
+# Lint and type-check settings for the repo's Python scripts. There is nothing to install: each
+# skill's scripts run as plain files. The tools and their versions are pinned in
+# .pre-commit-config.yaml, which CI runs too.
+
+[tool.ruff]
+line-length = 120
+# the progress tools run under whatever `python3` the user has; macOS ships 3.9
+target-version = "py39"
+# examples declare their own Python (PEP 723 header), newer than the skills' floor
+per-file-target-version = { "examples/**" = "py310" }
+src = ["lightning-jobs", "lightning-blog", "tests"]
+# the skill docs' code examples line comments up by hand for reading; leave Markdown alone
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # import order
+    "B",       # bugbear
+    "UP",      # pyupgrade
+    "SIM",     # simplify
+    "C4",      # comprehensions
+    "RUF",     # ruff's own
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["job_progress"]
+
+[tool.pyright]
+include = ["lightning-jobs", "lightning-blog", "tests", "examples"]
+pythonVersion = "3.9"
+typeCheckingMode = "standard"
+executionEnvironments = [
+    { root = "tests", extraPaths = ["lightning-jobs"] },
+    # examples declare GPU-only dependencies (torch, transformers) inline; CI doesn't install them
+    { root = "examples", pythonVersion = "3.10", reportMissingImports = "none" },
+    { root = "." },
+]
+
+[tool.pydoclint]
+style = "google"
+# types live in the signatures, not repeated in docstrings
+arg-type-hints-in-docstring = false
+check-return-types = false
+check-yield-types = false
+# a one-line summary is enough for small helpers; sections are checked wherever they are written
+skip-checking-short-docstrings = true
+
+[tool.importlinter]
+root_packages = ["job_progress"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Commands build on the shared layers, never on each other"
+type = "layers"
+layers = [
+    "job_progress.watch | job_progress.events | job_progress.statusline",
+    "job_progress.tracker | job_progress.settings",
+    "job_progress.store",
+    "job_progress.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "The tracker is pure logic: no files, no network"
+type = "forbidden"
+source_modules = ["job_progress.tracker"]
+forbidden_modules = ["job_progress.store", "lightning_sdk"]
+
+[[tool.importlinter.contracts]]
+name = "Only the poller talks to Lightning, so only it needs to run outside the sandbox"
+type = "forbidden"
+source_modules = [
+    "job_progress.core",
+    "job_progress.store",
+    "job_progress.settings",
+    "job_progress.events",
+    "job_progress.statusline",
+]
+forbidden_modules = ["lightning_sdk"]
