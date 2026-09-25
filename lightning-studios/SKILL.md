@@ -1,6 +1,6 @@
 ---
 name: lightning-studios
-description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them, upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio".
+description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio".
 ---
 
 # Lightning AI Studios
@@ -179,9 +179,23 @@ lightning studio connect exp-1 --teamspace my-org/my-teamspace --machine CPU   #
 **Kick off a long run and detach** (survives your session; studio keeps billing until stopped):
 
 ```python
-out, code = studio.run_and_detach("cd ~/src && nohup python train.py > train.log 2>&1", timeout=30)
+# the trailing echo records the exit code, so a watcher can tell success from a crash
+out, code = studio.run_and_detach(
+    "cd ~/src && nohup sh -c 'python train.py; echo PROGRESS_EXIT $?' > train.log 2>&1", timeout=30)
 # later: studio.run("tail -20 ~/src/train.log")
 ```
+
+For live progress, an ETA and setback tracking on a run like this, don't hand-roll a polling
+loop. Use the `lightning-jobs` skill's `progress.py` (its *Live progress, ETA and setbacks*
+section), pointing it at the Studio and the log. Paths are relative to the Studio's home:
+
+```bash
+python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
+```
+
+It reads new log lines every 10 s. Relaunching into the same log (overwritten or appended)
+counts as the run's next attempt, so crash-and-retry shows up as a setback rather than a
+fresh start.
 
 ## Raw API fallback
 
