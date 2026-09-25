@@ -248,12 +248,62 @@ class LiveRunFindings(unittest.TestCase):
         r.line(T0 + 1, "PROGRESS_PHASE train")
         for i in range(6):
             r.line(T0 + 10 * i, f"PROGRESS {10 * i}/100")
+        r.line(T0 + 60, "RuntimeError: NCCL timeout")
+        progress.end_attempt(r.s, T0 + 70)          # crashed in train
         r.line(T0 + 100, "PROGRESS_PHASE setup")  # relaunched attempt starts over
         r.line(T0 + 150, "PROGRESS_PHASE train")
         r.line(T0 + 160, "PROGRESS 30/100")      # resumed from a checkpoint
         self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
+        self.assertIn("NCCL timeout", r.s["setbacks"][-1]["cause"])  # the old attempt's error explains it
         self.assertEqual(r.s["peak"], 50)
         self.assertIn("stage train again", [e["msg"].split(": ", 1)[1].split(" (")[0] for e in r.events])
+
+    def test_stages_after_the_broken_one_start_fresh(self):
+        """Live run: attempt 5's eval was compared with attempts 1-4's evals (0% ↺3, peak 1%)."""
+        r = Run()
+        for attempt in range(3):
+            r.line(T0 + 1000 * attempt + 1, "PROGRESS_PHASE train")
+            r.line(T0 + 1000 * attempt + 2, "PROGRESS 100/100")
+            r.line(T0 + 1000 * attempt + 3, "PROGRESS_PHASE eval")
+            r.line(T0 + 1000 * attempt + 4, "PROGRESS 13/1319")
+            r.line(T0 + 1000 * attempt + 5, "ValueError: bad checkpoint")
+            progress.end_attempt(r.s, T0 + 1000 * attempt + 10)  # each attempt crashed in eval
+        r.line(T0 + 3001, "PROGRESS_PHASE train")
+        r.line(T0 + 3002, "PROGRESS 100/100")    # train starts fresh: it never broke
+        r.line(T0 + 3003, "PROGRESS_PHASE eval")
+        r.line(T0 + 3004, "PROGRESS 0/1319")     # eval broke last time: this one is compared
+        # only the last eval lost ground (13 → 0); train never broke, so it never counts
+        self.assertEqual([(b["kind"], b["from"], b["to"]) for b in r.s["setbacks"]], [("restart", 13, 0)])
+        r.tick("Running", T0 + 3005)
+        self.assertIsNone(r.s["last_error"])     # attempt 5 isn't blamed for the old crash
+
+    def test_rows_show_each_stage_of_the_current_attempt(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup 1/3")
+        r.line(T0 + 56, "PROGRESS_PHASE train 2/3")
+        for i in range(11):
+            r.line(T0 + 56 + 30 * i, f"PROGRESS {10 * i}/100")
+        r.line(T0 + 410, "PROGRESS_PHASE eval 3/3")
+        for i in range(4):
+            r.line(T0 + 420 + 10 * i, f"PROGRESS {i * 50}/1319")
+        rows = progress.render_rows(r.s, T0 + 460)
+        self.assertEqual(len(rows), 4)
+        self.assertIn("stage 3/3", rows[0])
+        self.assertIn(" 70%", rows[0])            # 2 stages done + ~11% of eval, over 3
+        self.assertTrue(rows[1].startswith("   ✔ setup"))
+        self.assertTrue(rows[2].startswith("   ✔ train"))
+        self.assertIn("▸ eval ", rows[3])
+        self.assertIn("ETA", rows[3])
+        self.assertEqual(len(progress.render_rows(r.s, T0 + 460, expand=False)), 1)
+
+    def test_rows_hide_earlier_attempts(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE train")
+        progress.end_attempt(r.s, T0 + 50)
+        r.line(T0 + 60, "PROGRESS_PHASE setup")
+        rows = progress.render_rows(r.s, T0 + 70)
+        self.assertEqual([x.split()[1] for x in rows[1:]], ["setup"])
+        self.assertIn("attempt 2", rows[0])
 
     def test_statusline_hint_and_config(self):
         proj = tempfile.mkdtemp()
@@ -312,7 +362,7 @@ class Locations(unittest.TestCase):
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
         r.line(T0 + 1, "PROGRESS_PHASE setup")
-        progress.close_stage(r.s, T0 + 100)          # attempt 1 ended
+        progress.end_attempt(r.s, T0 + 100)          # attempt 1 ended during setup
         r.line(T0 + 200, "PROGRESS_PHASE setup")      # attempt 2 prints the same stage again
         self.assertEqual(r.s["stage_since"], T0 + 200)
         self.assertIn("stage setup again", r.events[-1]["msg"])

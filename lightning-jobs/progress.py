@@ -48,6 +48,7 @@ STUDIO_HOME = "/teamspace/studios/this_studio"
 COST_INTERVAL = 30.0
 STATE_STALE_AFTER = 60.0
 FINAL_VISIBLE_FOR = 600.0
+MAX_STATUS_ROWS = 10
 RECOVERY_SAMPLES = 3
 RATE_WINDOW = 10
 
@@ -174,6 +175,9 @@ def new_state(run: str) -> Dict[str, Any]:
         "stage_since": None,
         "stage_index": None,
         "stage_count": None,
+        "attempt_no": 1,
+        "fail_stage": None,
+        "prev_error": None,
         "stages": [],
         "stage_snap": {},
         "job_running_since": None,
@@ -246,12 +250,23 @@ def stage_summary(s: Dict[str, Any], until: float) -> str:
 
 
 def close_stage(s: Dict[str, Any], at: float) -> None:
-    """End the current stage without starting another, e.g. when an attempt ends."""
+    """End the current stage without starting another."""
     if s["stage"] is not None:
         s["stage_snap"][s["stage"]] = {k: s[k] for k in PROGRESS_KEYS}
         s["stage"] = None
     if s["stages"] and s["stages"][-1]["end"] is None:
         s["stages"][-1]["end"] = at
+
+
+def end_attempt(s: Dict[str, Any], at: float) -> None:
+    """Close the attempt. Remember the stage it broke in: that stage is the only one a relaunch is
+    compared with, since only there was ground lost. The attempt's last error moves aside, so it
+    explains the setback but is never blamed for anything the next attempt does."""
+    s["fail_stage"] = s["stage"]
+    close_stage(s, at)
+    s["prev_error"] = s["last_error"]
+    s["last_error"] = s["last_error_at"] = None
+    s["attempt_no"] = s.get("attempt_no", 1) + 1
 
 
 def on_stage(s: Dict[str, Any], name: str, at: float,
@@ -268,14 +283,17 @@ def on_stage(s: Dict[str, Any], name: str, at: float,
         s["stage_snap"][cur] = {k: s[k] for k in PROGRESS_KEYS}
     if s["stages"] and s["stages"][-1]["end"] is None:
         s["stages"][-1]["end"] = at
-    snap = s["stage_snap"].get(name)
+    # only the stage the last attempt broke in resumes its old bar; every other stage starts fresh
+    snap = s["stage_snap"].get(name) if name == s.get("fail_stage") else None
+    if snap is not None:
+        s["fail_stage"] = None
     s.update({k: None for k in PROGRESS_KEYS})
     s["milestone"] = 0
     if snap:
         s.update(snap)
     s.update(samples=[], since_reset=0, rate=None, eta_s=None, stage=name, stage_since=at)
     prev = s["stages"][-1] if s["stages"] else None
-    s["stages"].append({"name": name, "start": at, "end": None})
+    s["stages"].append({"name": name, "start": at, "end": None, "attempt": s.get("attempt_no", 1)})
     msg = f"stage {name}"
     if snap is not None:
         msg += " again"
@@ -335,7 +353,8 @@ def on_sample(s: Dict[str, Any], r: Dict[str, Any], at: float) -> List[Dict[str,
     if kind:
         issue_start = s["issue_since"] or s["last_sample_at"] or at
         lost = max(0.0, at - issue_start)
-        cause = _recent_cause(s, s["issue_since"])
+        cause = _recent_cause(s, s["issue_since"]) or s.get("prev_error")
+        s["prev_error"] = None
         s["setbacks"].append(
             {"at": at, "kind": kind, "from": s["step"], "to": r["step"], "peak": s["peak"],
              "cause": cause, "lost_s": lost, "job": s["job"]}
@@ -400,6 +419,7 @@ def on_tick(s: Dict[str, Any], status: str, platform_attempt: Optional[int], now
 
     if platform_attempt and s["platform_attempt"] and platform_attempt > s["platform_attempt"]:
         s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
+        end_attempt(s, now)
         events.append(_event("retry", run, f"platform retry: attempt {platform_attempt}", now))
     if platform_attempt:
         s["platform_attempt"] = platform_attempt
@@ -407,6 +427,7 @@ def on_tick(s: Dict[str, Any], status: str, platform_attempt: Optional[int], now
     if status == "Pending":
         if prev == "Running":
             s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
+            end_attempt(s, now)
             events.append(_event("requeued", run, "back to Pending (requeued or retried)", now))
         s["pending_since"] = s["pending_since"] or now
         if s["phase"] not in ("waiting",):
@@ -474,6 +495,76 @@ def stage_track(s: Dict[str, Any], now: float, keep: int = 3) -> str:
     if len(stages) > keep + 1:
         parts.insert(0, "…")
     return " · ".join(parts)
+
+
+def job_fraction(s: Dict[str, Any]) -> Optional[float]:
+    """Finished stages plus the current stage's own fraction, over the declared stage count."""
+    count = s.get("stage_count")
+    if not count:
+        return None
+    frac = s["step"] / s["total"] if s.get("total") and s.get("step") is not None else 0.0
+    return max(0.0, min(1.0, ((s.get("stage_index") or 1) - 1 + min(frac, 1.0)) / count))
+
+
+def render_rows(s: Dict[str, Any], now: float, expand: bool = True) -> List[str]:
+    """A running run with stages: a header row with the whole-job bar, then one row per stage of
+    the current attempt. Anything else, or `expand=False`, is the single summary line."""
+    stages = [st for st in s.get("stages") or [] if st.get("attempt", 1) == s.get("attempt_no", 1)]
+    if not expand or not stages or s["phase"] in FINAL_PHASES:
+        return [render_line(s, now)]
+    since = lambda t: fmt_duration(now - t) if t else "…"  # noqa: E731
+    phase, attempt = s["phase"], s.get("attempt_no", 1)
+    icon = {"pending": "⏳", "starting": "▶", "running": "▶", "recovering": "⟳", "stalled": "⚠",
+            "waiting": "✖"}.get(phase, "?")
+    head = f"{icon} {s['run']}"
+    frac = job_fraction(s)
+    if frac is not None:
+        head += f"  {bar(round(frac * 1000), round(frac * 1000), 1000)}  {int(frac * 100):3d}%"
+    info = []
+    if s.get("stage_count"):
+        info.append(f"stage {s.get('stage_index')}/{s['stage_count']}")
+    if attempt > 1:
+        info.append(f"attempt {attempt}")
+    if s["setbacks"]:
+        info.append(f"↺{len(s['setbacks'])}" + (f" (+{fmt_duration(s['lost_s'])})" if s["lost_s"] >= 1 else ""))
+    cause = s["last_error"]
+    if phase == "pending":
+        info.append(f"{s.get('pending_note') or 'waiting for machine'} {since(s['pending_since'])}")
+    elif phase == "stalled":
+        info.append(f"stalled {since(s['last_sample_at'])}" + (f" · {cause[:50]}" if cause else ""))
+    elif phase == "waiting":
+        info.append(f"failed · waiting for relaunch {since(s['issue_since'])}" + (f" · {cause[:40]}" if cause else ""))
+    if s["cost"] is not None:
+        info.append(f"${s['cost']:.2f}")
+    rows = [head + ("  " + " · ".join(info) if info else "")]
+
+    width = max(len(st["name"]) for st in stages)
+    for st in stages:
+        name = st["name"].ljust(width)
+        if st["end"] is not None:
+            rows.append(f"   ✔ {name}  {fmt_duration(st['end'] - st['start'])}")
+            continue
+        row = f"   ▸ {name}"
+        step, total = s["step"], s["total"]
+        if total and st["name"] == s.get("stage"):
+            peak = s["peak"] if s.get("peak_epoch") == s["epoch"] else step
+            row += f"  {bar(step or 0, peak or step or 0, total)}  {pct(step, total):3d}%"
+            if step is not None and step >= total:
+                row += f"  finished · {since(s['last_sample_at'])} ago"
+            else:
+                row += f"  ETA {fmt_duration(s['eta_s'])}"
+                if peak and step is not None and peak > step:
+                    row += f" · peak {pct(peak, total)}%"
+        else:
+            row += f"  {since(st['start'])}"
+        rows.append(row)
+    if s.get("stage_count") and len(stages) < s["stage_count"]:
+        left = s["stage_count"] - max(len(stages), s.get("stage_index") or 0)
+        if left > 0:
+            rows.append(f"   · {left} more stage{'s' if left > 1 else ''}")
+    stale = s["updated_at"] and now - s["updated_at"] > STATE_STALE_AFTER
+    return [f"\033[2m{r} · stale (poller not running?)\033[0m" if stale and i == 0 else r
+            for i, r in enumerate(rows)]
 
 
 def render_line(s: Dict[str, Any], now: float) -> str:
@@ -766,7 +857,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             if state["job"] and state["job"] != entry["name"]:
                 state["issue_since"] = state["issue_since"] or state["last_sample_at"]
                 state["job_running_since"] = None
-                close_stage(state, time.time())
+                end_attempt(state, time.time())
             if state["phase"] == "waiting":
                 state["phase"] = "pending"
             state["job"] = entry["name"]
@@ -927,7 +1018,7 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
         state["issue_since"] = state["issue_since"] or state["last_sample_at"] or now
         state["job_running_since"] = None
         state["phase"] = "pending"
-        close_stage(state, now)
+        end_attempt(state, now)
         save([_event("relaunch", state["run"], f"{why}: new attempt", now)])
 
     while True:
@@ -1092,8 +1183,14 @@ def cmd_statusline(args: argparse.Namespace) -> int:
     visible = [s for s in states
                if s["phase"] not in FINAL_PHASES or now - (s.get("finished_at") or 0) < FINAL_VISIBLE_FOR]
     visible.sort(key=lambda s: (s["phase"] in FINAL_PHASES, -(s.get("updated_at") or 0)))
-    for s in visible[:5]:
-        print(render_line(s, now))
+    rows: List[str] = []
+    for i, s in enumerate(visible[:5]):
+        # expand the two most recently active runs; the rest stay one line each
+        out = render_rows(s, now, expand=i < 2)
+        if rows and len(rows) + len(out) > MAX_STATUS_ROWS:
+            out = [render_line(s, now)]
+        rows += out
+    print("\n".join(rows[:MAX_STATUS_ROWS]))
     return 0
 
 

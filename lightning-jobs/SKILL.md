@@ -334,12 +334,12 @@ print(f"PROGRESS {step}/{total_steps}", flush=True)   # optional: f"... attempt=
   echo "PROGRESS_PHASE eval 3/3";  python eval.py
   ```
 
-  Each stage keeps its own bar, and the final event lists how long each stage took. A stage that
-  prints no `PROGRESS` lines (evals rarely do: vLLM and lm-eval draw no bars without a terminal)
-  still gets a line: the stages so far and their times (`train ✔ 9m40s · ▸ eval 4m32s`). The
-  optional `i/n` adds a bar for the whole job (`▓▓▓▓▓░ stage 3/3`), so the run never loses its bar. A relaunch
-  that enters `train` again is compared with the earlier training progress, so resuming from a
-  checkpoint shows up as a setback.
+  Each stage keeps its own bar, and the final event lists how long each stage took. The optional
+  `i/n` gives the run a whole-job bar (below). A stage that prints no `PROGRESS` lines just shows
+  its elapsed time; evals rarely print any, since vLLM and lm-eval draw no bars without a
+  terminal. After a relaunch, only the stage the last attempt broke in is compared with its old
+  progress, so resuming training from a checkpoint shows up as a setback, while stages that never
+  broke simply start again.
 
 tqdm bars are read as a fallback when a script has no `PROGRESS` line. They are less reliable:
 PyTorch Lightning's per-epoch bars only give progress within the epoch, and validation bars are
@@ -406,11 +406,18 @@ shows in the terminal only; the desktop app and IDE extensions don't draw status
 there the Monitor events are the view.
 
 ```
-▶ train-run-42  ▓▓▓▓▓▓▒▒▒░░░░░░░░░░░   30% ↺1  ETA 4m10s (+1m30s) · $0.83
+▶ train-run-42  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░   71%  stage 3/3 · attempt 2 · ↺1 (+1m35s) · $1.41
+   ✔ setup  55s
+   ✔ train  5m55s
+   ▸ eval   ▓▓▓░░░░░░░░░░░░░░░░░   15%  ETA 4m40s
 ```
 
-`▓` is done, `▒` is ground lost to a setback (it clears once progress passes the old peak), and `↺N`
-counts setbacks. `(+…)` is the time setbacks and stalls have cost so far.
+The top row is the whole job: finished stages plus the current stage's own progress, out of the
+stage count. Under it is one row per stage of the current attempt; earlier attempts show only as
+`attempt N`. A job without stage markers gets a single row with its step bar. `▓` is done, `▒` is
+ground lost to a setback (it clears once progress passes the old peak), `↺N` counts setbacks, and
+`(+…)` is the time they and stalls have cost. The two most recently active runs are expanded;
+other and finished runs take one row each.
 
 **5. Keep a failed run going across relaunches.** A run is a chain of attempts, so its peak,
 setback history and lost time carry over when the job name changes. When a job fails, the poller
