@@ -2,3 +2,6 @@
 
 # run outputs from examples (metrics, samples, adapters)
 examples/*/outputs/
+
+# python bytecode (tests and the progress tools write it next to the source)
+__pycache__/
