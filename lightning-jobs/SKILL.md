@@ -73,14 +73,26 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the choice: `lightning config set teamspace <owner>/<teamspace>`.
 
-**From a scoped API key** (an agent, no user to ask): `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`). **Select the `organization` entry rather than `.memberships[0]`**: the same teamspace is commonly listed twice, once with `ownerType: organization` and once with `ownerType: user` (identical `projectId` and `name`), so index 0 is a coin flip and the `user` row's `ownerId` will not resolve against `/v1/orgs`.
+**From a scoped API key** (an agent with no user to ask): `--teamspace` needs the owner's *slug*,
+while `/v1/memberships` only gives the owner's id, and the same teamspace can appear twice (an
+`organization` row and a `user` row with one `projectId`). Continue only if a single teamspace is
+listed, prefer its organization row, and resolve the owner by `ownerType` (needs `jq`):
 
 ```bash
 M=$(lightning api /v1/memberships)
-ROW=$(echo "$M" | jq -c '[.memberships[] | select(.ownerType=="organization")][0] // .memberships[0]')
-TS=$(echo "$ROW" | jq -r .name)                                                        # teamspace
-OWNER=$(lightning api "/v1/orgs/$(echo "$ROW" | jq -r .ownerId)" | jq -r .name)         # owner (org) slug
-lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
+if [ "$(printf "%s" "$M" | jq '[.memberships[].projectId] | unique | length')" != 1 ]; then
+  echo "several teamspaces: ask the user which one" >&2
+else
+  ROW=$(printf "%s" "$M" | jq -c '(.memberships | map(select(.ownerType=="organization"))) + .memberships | .[0]')
+  TS=$(printf "%s" "$ROW" | jq -r .name); OID=$(printf "%s" "$ROW" | jq -r .ownerId)
+  if [ "$(printf "%s" "$ROW" | jq -r .ownerType)" = organization ]; then
+    OWNER=$(lightning api "/v1/orgs/$OID" | jq -r .name)
+  else   # a personal teamspace; the search is fuzzy, so match the id exactly
+    OWNER=$(lightning api /v1/users/search -X GET -f "query=$OID" \
+      | jq -r --arg id "$OID" '.users[] | select(.id==$id) | .username')
+  fi
+  lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
+fi
 ```
 
 ## CLI reference
@@ -252,9 +264,9 @@ for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, 
 ```
 
 `cost` is USD per hour and `wait_time` the expected seconds until a machine is free. Launch with
-the `Machine` object from the row you pick, on that row's account (`Job.run(machine=m,
-cloud=acct, …)`, or a Studio created with `cloud=acct`): a machine name from one account fails on
-another. `list_machines()` with no argument merges several accounts without saying which row
+the row's machine on that row's account (`Job.run(machine=m, cloud=acct, …)`, or a Studio created
+with `cloud=acct`): what matters is that the account sells that GPU at that count. The SDK maps a
+GPU's names (`H200`, `lit-h200-1`, `lit-h200-141gb-1`) to one machine. `list_machines()` with no argument merges several accounts without saying which row
 belongs to which, so it can't tell you where to launch. Show the user the top rows with price and
 wait before launching on a GPU. For quotes before login, `GET
 /v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
@@ -438,7 +450,7 @@ inspect <name>`, `lightning job logs <name>`.
 - `image` and `studio` are mutually exclusive; a studio job's studio must be in the same teamspace and cloud account.
 - **In Python, don't pass `teamspace=` next to a `Studio` object.** `Job.run(studio=s, teamspace="owner/ts")` raises `ValueError: Studio teamspace does not match provided teamspace` even when it is the Studio's own teamspace. Leave `teamspace` out: the job takes it from the Studio.
 - **`uv run` fails inside a studio job** with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder that doesn't exist there (the same happens inside a fresh Studio). Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …` (unsetting every `UV_*` variable works too).
-- **Pass the `Machine` from `list_machines(cloud_account=…)`, not a name you know from elsewhere.** The same GPU has different names on different accounts (`lit-h200-1` on one, `lit-h200-141gb-1` on another), and a name the job's account doesn't know fails the launch. `Teamspace.cloud_accounts` gives display names such as `Lightning Cloud`; `list_machines()` returns an empty list for those and `Studio(cloud=…)` fails with `clusterID Lightning Cloud is invalid`, so use `Teamspace.cloud_account_objs[i].cluster_id`.
+- **Launch on an account that sells the GPU at that count.** A 1× H200 on an account that has none fails with `accelerator … not found for this AWS cluster`, whatever the machine is called. `Teamspace.cloud_accounts` gives display names such as `Lightning Cloud`; `list_machines()` returns an empty list for those and `Studio(cloud=…)` fails with `clusterID Lightning Cloud is invalid`, so use `Teamspace.cloud_account_objs[i].cluster_id`.
 - **A job goes `Running` → `Pending` → `Completed` (or `Failed`).** The second `Pending`, about 30 s when measured, is the platform saving the job's outputs after the command exits, not a retry. Don't stop the job then; wait with `job.wait()`, which returns only on a terminal state.
 - **`job.logs` is not a string.** `print(job.logs)` works, but slicing it (`job.logs[-2000:]`) raises `TypeError: '_Logs' object is not subscriptable`. Use `lightning job logs <name> --tail N` for the end of a log.
 - Omitting **both** `--studio` and `--image` (Python: leaving both `studio=` and `image=` unset) does not error — it defaults to the Studio you're currently running inside, resolved via the `LIGHTNING_CLOUD_SPACE_ID` env var, as long as that Studio's teamspace matches the resolved `--teamspace`. Useful for "run this script from my current Studio" without looking up the Studio's name first. If you're not running inside a Studio (or the teamspace doesn't match), omitting both raises an error asking for one explicitly.

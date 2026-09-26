@@ -53,14 +53,26 @@ lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .pro
 
 Persist the user's choice so they aren't asked again: `lightning config set teamspace <owner>/<teamspace>`.
 
-**From a scoped API key** (an agent, no user to ask): `/v1/memberships` gives the teamspace name and the owner *id*, but `--teamspace` needs the owner *slug* — resolve it via `/v1/orgs` (needs `jq`). **Select the `organization` entry rather than `.memberships[0]`**: the same teamspace is commonly listed twice, once with `ownerType: organization` and once with `ownerType: user` (identical `projectId` and `name`), so index 0 is a coin flip and the `user` row's `ownerId` will not resolve against `/v1/orgs`.
+**From a scoped API key** (an agent with no user to ask): `--teamspace` needs the owner's *slug*,
+while `/v1/memberships` only gives the owner's id, and the same teamspace can appear twice (an
+`organization` row and a `user` row with one `projectId`). Continue only if a single teamspace is
+listed, prefer its organization row, and resolve the owner by `ownerType` (needs `jq`):
 
 ```bash
 M=$(lightning api /v1/memberships)
-ROW=$(echo "$M" | jq -c '[.memberships[] | select(.ownerType=="organization")][0] // .memberships[0]')
-TS=$(echo "$ROW" | jq -r .name)                                                        # teamspace
-OWNER=$(lightning api "/v1/orgs/$(echo "$ROW" | jq -r .ownerId)" | jq -r .name)         # owner (org) slug
-lightning config set teamspace "$OWNER/$TS"     # every command now defaults here; or pass --teamspace "$OWNER/$TS"
+if [ "$(printf "%s" "$M" | jq '[.memberships[].projectId] | unique | length')" != 1 ]; then
+  echo "several teamspaces: ask the user which one" >&2
+else
+  ROW=$(printf "%s" "$M" | jq -c '(.memberships | map(select(.ownerType=="organization"))) + .memberships | .[0]')
+  TS=$(printf "%s" "$ROW" | jq -r .name); OID=$(printf "%s" "$ROW" | jq -r .ownerId)
+  if [ "$(printf "%s" "$ROW" | jq -r .ownerType)" = organization ]; then
+    OWNER=$(lightning api "/v1/orgs/$OID" | jq -r .name)
+  else   # a personal teamspace; the search is fuzzy, so match the id exactly
+    OWNER=$(lightning api /v1/users/search -X GET -f "query=$OID" \
+      | jq -r --arg id "$OID" '.users[] | select(.id==$id) | .username')
+  fi
+  lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
+fi
 ```
 
 ## CLI reference
@@ -160,8 +172,9 @@ for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, 
 
 `cost` is USD per hour and `wait_time` the expected seconds until a machine is free. A Studio's
 cloud account is fixed when it is created, so create it on the row's account
-(`Studio(..., cloud=acct)` / `--cloud acct`) and start or switch it with that row's `Machine`
-object: a machine name from one account fails on another. `list_machines()` with no argument
+(`Studio(..., cloud=acct)` / `--cloud acct`) and start or switch it to that row's machine: what
+matters is that the account sells that GPU at that count, not what it's called (the SDK maps `H200`,
+`lit-h200-1` and `lit-h200-141gb-1` to one machine). `list_machines()` with no argument
 merges several accounts without saying which row belongs to which. Show the user the top rows with
 price and wait before starting a GPU. For quotes before login, `GET
 /v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
@@ -233,7 +246,7 @@ studio.upload_folder("./src", "src")                          # after ready, so 
 studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
 try:                                                          # any failure from here stops the GPU
     try:
-        studio.switch_machine(gpu)                            # the row's Machine, not Machine.H200
+        studio.switch_machine(gpu)                            # the row picked from this account's list
     except Exception as e:                                    # it can report this and switch anyway
         if "cannot switch to a Studio" not in str(e):
             raise
