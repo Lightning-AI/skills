@@ -117,6 +117,11 @@ puts `proj`'s files straight into the Studio's home, whether or not either path 
 keep the folder, name it in the destination: `lightning cp -r ./proj lit://…/studios/my-studio/proj/`.
 Check the result with `lightning ls -r` before running anything that expects the files in place.
 
+**Copy files in only after the Studio is ready, or they can reach the machine late.** `lightning cp`
+goes through storage, so a file copied during setup may be missing when the Studio becomes usable.
+`studio.upload_file` on a ready Studio lands at once. Check with `studio.run("ls ~")` before
+running anything that needs the file.
+
 ## Python SDK
 
 ```python
@@ -151,9 +156,8 @@ Pass as `Machine.<NAME>` or string (`Machine.from_str("A100")` accepts name or s
 - GPU: `T4_SMALL`, `T4`, `T4_X_2/4/8`, `L4`, `L4_X_2/4/8`, `L40S`, `L40S_X_2/4/8`, `RTXP_6000` (+`_X_2/4/8`), `A100` (+`_X_2/4/8`), `H100` (+`_X_2/4/8`), `H200` (+`_X_2/4/8`), `B200`, `B200_X_8`
 - `A100_40GB*`/`A100_80GB*` variants exist in the SDK but are hidden from CLI `--machine` (usable with `studio switch` and in Python).
 
-The names above are current as of writing and SKUs do get added, so treat the list as a starting
-point, not a closed set. `lightning machine list` prints the names your installed CLI accepts, but
-it is an offline list and says nothing about what a teamspace can launch.
+SKUs get added, so treat this list as a starting point, not a closed set. `lightning machine list`
+shows the names your CLI accepts, not what a teamspace can launch.
 
 **Pick the machine from live data, per cloud account.** A teamspace can launch on several cloud
 accounts, and the same GPU differs between them in name, price and wait. List what each account
@@ -170,17 +174,23 @@ for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, 
     print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
 ```
 
-`cost` is USD per hour and `wait_time` the expected seconds until a machine is free. A Studio's
-cloud account is fixed when it is created, so create it on the row's account
-(`Studio(..., cloud=acct)` / `--cloud acct`) and start or switch it to that row's machine: what
-matters is that the account sells that GPU at that count, not what it's called (the SDK maps `H200`,
-`lit-h200-1` and `lit-h200-141gb-1` to one machine). `list_machines()` with no argument
-merges several accounts without saying which row belongs to which. Show the user the top rows with
-price and wait before starting a GPU. For quotes before login, `GET
-/v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
-skill has the provider values and the costing recipes). Don't invent a catalog endpoint:
-`/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all
-return `code: 5`.
+`cost` is USD per hour and `wait_time` the expected seconds until a machine is free.
+`list_machines()` with no argument merges several accounts without saying which row belongs to
+which. Show the user the top rows with price and wait, and ask before starting a GPU unless they
+already named one.
+
+**A Studio's cloud account is fixed at creation (`studio switch` can't move it), so create it on
+the chosen row's account** and start or switch it to that row's machine. What matters is that the
+account sells that GPU at that count, not its name: the SDK maps `H200`, `lit-h200-1` and
+`lit-h200-141gb-1` to one machine.
+
+**`cloud=` / `--cloud` takes the account id (`cluster_id`), not a display name.**
+`Studio(..., cloud="Lightning Cloud")` fails with `400 clusterID Lightning Cloud is invalid`.
+
+For quotes before login, `GET /v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the
+`lightning-cost-estimation` skill has the provider values and the costing recipes). Don't invent a
+catalog endpoint: `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and
+`/v1/compute/accelerators` all return `code: 5`.
 
 Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interruptible=True`.
 
@@ -189,29 +199,25 @@ Interruptible (spot) is a flag, not a machine type: `--interruptible` / `interru
 <!-- TODO: remove this workaround once the backend rejects a GPU request it can't fill instead of
 starting a CPU machine (Task Board: "CLI silently downgrades to CPU when a GPU SKU isn't available"). -->
 
-A Studio's cloud is fixed at creation (`studio switch` can't move it), and the default cloud
-doesn't sell every GPU at every count: 1× H200 isn't on AWS. **Ask for a GPU the Studio's cloud
-doesn't sell and `studio start` comes up on CPU with only a "hasn't been vetted" warning.** So:
+**Ask for a GPU the Studio's cloud doesn't sell and `studio start` comes up on CPU with only a
+"hasn't been vetted" warning.** The default cloud doesn't sell every GPU at every count (e.g. 1×
+H200 isn't on AWS). The first workflow below guards against this:
 
-1. **Pick a cloud account that sells the GPU at your count.** The per-account listing in
-   *Machine types* shows only what each account can launch; create the Studio on that row's
-   account. A reused Studio keeps its old cloud, so check it in `lightning studio list` first and
-   create a new Studio if it's the wrong one.
-2. **Set up on CPU on that account.** Installs, model downloads and CUDA source builds bill at GPU
-   rates otherwise. Builds need their target set, e.g. `TORCH_CUDA_ARCH_LIST=9.0` for H100/H200.
-3. **Switch with that row's `Machine`, wait until the Studio can run commands again, and check the
-   hardware** before running anything. No GPU means stop the Studio and go back to step 1; don't
-   retry.
-
-The first workflow below does exactly this.
+1. **Create the Studio on an account that sells the GPU at your count** (listing above). A reused
+   Studio keeps its old cloud: check it in `lightning studio list`, and create a new one if wrong.
+2. **Do setup on CPU on that account, because installs, model downloads and CUDA source builds bill
+   at GPU rates otherwise.** Builds need their target set, e.g. `TORCH_CUDA_ARCH_LIST=9.0` for
+   H100/H200.
+3. **After switching to that row's `Machine`, wait until the Studio can run commands and check the
+   hardware.** No GPU means stop the Studio and go back to step 1; don't retry.
 
 ## Example workflows
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
 
 **Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
-can run commands, and `start()` can keep blocking after it can, so start in the background and
-poll for readiness with a deadline (see Gotchas):
+can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
+or never return. So start in the background and poll for readiness with a deadline (see Gotchas):
 
 ```python
 import threading, time
@@ -305,10 +311,9 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 
 ## Gotchas
 
-- Starting compute costs money; GPU machines cost more. Prefer `CPU` for setup work, switch to GPU only when needed, and **stop studios when done**. Ask before starting expensive machines (A100/H100/H200/B200) unless the user already specified one.
-- `run*` methods and `studio switch` require status `Running`; `start()` on a studio already running on a different machine raises — use `switch_machine` instead.
+- **Stop Studios when done: attached compute bills, and GPUs cost more.**
+- **`start()` on a Studio already running on a different machine raises.** Use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
-- `studio create` does not attach compute; `studio start --create` does both.
 - **For a one-shot run (train, eval, batch), prefer a job (`lightning-jobs`).** A job stops billing
   when its command exits, crash included; a crashed run on a Studio keeps the GPU billing. The
   exception is a short run on a tight deadline: the first job from a Studio waits about 5 minutes
@@ -320,14 +325,21 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
   A poller with no deadline, one that only matches progress lines, or one that can't reach
   lightning.ai (a sandboxed background command) stays quiet through a crash. Give it a deadline,
   match `Traceback`/`Error`/`Killed`/`CUDA out of memory` too, and check it prints its first line.
-- **`lightning studio delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it, a scripted or agent-run delete reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**, leaving the studio (and its billing) alive. Confirm with the user first, then pass `-y`; there is no need to drop into the Python SDK for this.
-- **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Once corrected, adding `-F limit=20` still fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
+- **A non-interactive `lightning studio delete` without `-y` deletes nothing.** It prints
+  `Are you sure you want to delete? [y/N]: Aborted.` and exits, leaving the studio (and its
+  billing) alive. Confirm with the user first, then pass `-y`/`--yes`.
+- **The studios list endpoint is `/cloudspaces`, one word, and takes no `-F` fields.** The hyphenated `/v1/projects/{pid}/cloud-spaces` returns `HTTP 404 Not Found`. Adding `-F limit=20` fails with `HTTP 400 Bad Request`, because `lightning api` sends any request with `-f`/`-F` fields and no `-X` as a POST (the create call). Call it bare and slice with `-q`, or pass `-X GET` to send the fields as query params.
 - Inside a Studio, `Studio()` with no args resolves to the current studio (via `LIGHTNING_CLOUD_SPACE_ID`).
-- **`cloud=` / `--cloud` takes a cloud account *id*.** `Teamspace.cloud_accounts` returns display names such as `Lightning Cloud`, and `Studio(..., cloud="Lightning Cloud")` fails with `400 clusterID Lightning Cloud is invalid`. Use `Teamspace.cloud_account_objs[i].cluster_id` (here `lightning-baremetal`); see *Machine types* for listing each account's machines.
 - **`uv run` fails in a fresh Studio** (and in jobs launched from one) with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder that doesn't exist yet. Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …`.
-- **`Running` is not ready.** Right after a start, commands can fail with `Error: We are still setting things up for you, please try again after the progress bar at the top of the Studio disappears.` `python`, `pip` and `uv` are shell aliases (`load_conda_and_run`) that refuse until setup is done, while a plain `true` succeeds much earlier, so poll with `studio.run_with_exit_code("python -c pass")` until that text is gone (see *Example workflows*; it took about 80 s on a restarted CPU Studio). When measured, a fresh H200 Studio took about 2 minutes, while another never finished setup across two starts and ~20 minutes of billed H200 time. If setup is still going after several minutes, stop the Studio and create a new one rather than starting it again.
-- **`studio.switch_machine()` can raise and still switch.** A CPU → H200 switch on `lightning-baremetal` raised `ApiException (400) … "cannot switch to a Studio"`, and 14 s later `nvidia-smi` on the Studio showed the H200. Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*; don't restart or re-switch on it.
-- **`studio.start()` and `lightning studio start` can block well past readiness**, and in the stuck case above they never returned. Run them in the background and poll, as in the example, rather than waiting on them.
-- **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character — `tail -c N` on a log with `é` or a progress bar, `head -c` on a text file — fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
-- **Upload after the Studio is ready, with `studio.upload_file`.** `lightning cp` into a running Studio goes through storage: a file copied during setup wasn't on the machine when it became usable, and appeared about 30 s later. `upload_file` on a ready Studio showed up at once. Check with `studio.run("ls ~")` before running anything that needs the file.
-- In Python, `teamspace=` takes the same `"owner/teamspace"` string as the CLI `--teamspace` flag (for `Teamspace`, `Studio` and `Job`). The separate `org=`/`user=` arguments still work but are deprecated and emit a `DeprecationWarning`; passing both forms raises `ValueError`.
+- **`Running` is not ready: poll with a `python` command until the setup message is gone.** Right
+  after a start, commands can fail with `Error: We are still setting things up for you, please try again after the progress bar at the top of the Studio disappears.`
+  `python`, `pip` and `uv` are shell aliases (`load_conda_and_run`) that refuse until setup is
+  done, while a plain `true` succeeds much earlier, so poll `studio.run_with_exit_code("python -c pass")`
+  as in *Example workflows*. Setup usually takes 1–2 minutes. If it is still going after several
+  minutes, stop the Studio and create a new one: starting the same one again can stay stuck.
+- **`studio.switch_machine()` can raise `ApiException (400) … "cannot switch to a Studio"` and still
+  switch.** Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*;
+  don't restart or re-switch on it.
+- **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character (`tail -c N` on a log with `é` or a progress bar, `head -c` on a text file) fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
+- **Passing both `teamspace="owner/teamspace"` and the deprecated `org=`/`user=` raises `ValueError`**
+  (for `Teamspace`, `Studio` and `Job`). The old arguments alone still work but emit a `DeprecationWarning`.

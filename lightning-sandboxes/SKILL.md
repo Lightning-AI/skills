@@ -5,7 +5,7 @@ description: Run code in Lightning AI Sandboxes - fast, isolated ephemeral VMs w
 
 # Lightning AI Sandboxes
 
-A Sandbox is a fast-booting isolated VM for code execution. Ephemeral by default (`persistent=True` enables stop/resume via auto-snapshots). Import from the subpackage — `from lightning_sdk.sandbox import Sandbox` (the top-level `lightning_sdk.sandbox.py` `_Sandbox` class is legacy; ignore it).
+A Sandbox is a fast-booting isolated VM for code execution. It is ephemeral by default: stop deletes it, and only `persistent=True` enables stop/resume via auto-snapshots. Import from the subpackage with `from lightning_sdk.sandbox import Sandbox`. The top-level `lightning_sdk.sandbox.py` `_Sandbox` class is legacy; ignore it.
 
 ## Setup & auth (sandbox-specific)
 
@@ -89,7 +89,9 @@ lightning sandbox snapshot get <SNAPSHOT_ID>
 lightning sandbox snapshot delete <SNAPSHOT_ID> -y
 ```
 
-There is no `cp`/upload CLI — move files via `run` with shell commands, or the SDK file API below.
+Runtime ids are `node22`, `node24` and `python313`, each with a `-docker` variant. Any other id fails with `invalid runtime: <id>`. A custom `--image` runs on CPU under gVisor. In the SDK the same options are `image=` and, for a private registry, `image_secret_ref=` naming a Docker-registry secret.
+
+There is no `cp`/upload CLI. Move files with `run` and shell commands, or with the SDK file API below.
 
 ## Python SDK
 
@@ -141,11 +143,11 @@ for s in client.list(teamspace="owner/teamspace").sandboxes: print(s.sandbox_id,
 sb = client.get("sbx-...")
 ```
 
-Interactive PTY (`websocket-client` ships with the SDK): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. The result's `exit_code` is the shell's real status on a clean close, `0` when the backend reports none, `-1` if the connection broke (`error` says why) and `None` while running — prefer `run_command` when you need a guaranteed exit code.
+Interactive PTY (`websocket-client` ships with the SDK): `sb.process.create_pty(PtyCreateOpts(session_name="main"))` → `pty.send_input("ls\n")`, `pty.wait()`. The result's `exit_code` is the shell's real status on a clean close, `0` when the backend reports none, `-1` if the connection broke (`error` says why) and `None` while running. Prefer `run_command` when you need a guaranteed exit code.
 
 ## Docker inside a sandbox
 
-The `-docker` runtimes ship Docker (engine, CLI, buildx, compose) with **`dockerd` already running** by the time create returns — nothing to install, no daemon to bootstrap, `docker version` works immediately. Pick the variant explicitly, or use `--docker` / `docker=True` to append the suffix to the base runtime you asked for:
+The `-docker` runtimes ship Docker (engine, CLI, buildx, compose), and **`dockerd` is already running when create returns**, so `docker version` works at once. Pick the variant explicitly, or pass `--docker` / `docker=True` to append the suffix to the base runtime:
 
 ```bash
 lightning sandbox create --runtime python313-docker --port 8080 --json   # cpu-1 default is fine for Docker
@@ -153,11 +155,11 @@ lightning sandbox create --runtime python313 --docker   # identical — resolves
 lightning sandbox create --docker                       # no runtime -> node24-docker (Node, NOT Python)
 ```
 
-Variants: `node22-docker`, `node24-docker`, `python313-docker`; anything else fails with `invalid runtime: <id>`. `docker=True` is rejected together with `image` (a custom image opts in itself by carrying the OCI label `ai.lightning.sandbox.docker=true`) or `snapshot_id` (the runtime comes from the snapshot).
+`docker=True` is rejected together with `image` (a custom image opts in by carrying the OCI label `ai.lightning.sandbox.docker=true`) or `snapshot_id` (the runtime comes from the snapshot).
 
 ### Where images are stored, and how much room you get
 
-Pick the instance type for where `/var/lib/docker` lands, not for its RAM: **`cpu-1` and `cpu-4` keep images on disk, every other shape keeps them in RAM.** That makes the default `cpu-1` a usable Docker box — a 1.1 GB image pulls fine on a sandbox with 1.25 GiB of RAM, because the image never touches memory — while the larger `cpu-2` gives you more RAM but less image room.
+**`cpu-1` and `cpu-4` keep images on disk; every other shape keeps them in RAM.** Pick the instance type for where `/var/lib/docker` lands, not for its RAM. On the disk shapes an image never touches memory, so the default `cpu-1` is a usable Docker box despite its small RAM.
 
 | `--instance-type` | RAM       | `/var/lib/docker` | image room | `storage_gb` raises it? |
 | ----------------- | --------- | ----------------- | ---------- | ----------------------- |
@@ -167,31 +169,29 @@ Pick the instance type for where `/var/lib/docker` lands, not for its RAM: **`cp
 | `cpu-8`           | 38.75 GiB | RAM (tmpfs)       | 20 GB      | no                      |
 | `cpu-16`          | 77.5 GiB  | RAM (tmpfs)       | 39 GB      | no                      |
 
-Those are the current defaults, measured; treat them as a planning guide and confirm the live number with `df -h /var/lib/docker` before sizing a pull.
+- **`df -h /var/lib/docker` reports the real ceiling; trust it over this table.** The table holds measured current defaults, so use it to plan and check `df` before sizing a pull.
+- **On the disk shapes there is one quota for everything.** `/`, `/tmp` and `/var/lib/docker` draw on the same pool, so a 3 GB file in `/root` leaves 3 GB less for images. Raise it with the SDK-only `storage_gb` (`Sandbox.create(..., instance_type="cpu-1", storage_gb=20)` gives docker 20 GB). There is no CLI flag for it.
+- **On the RAM shapes the cap is half the sandbox's memory, and it counts against your memory budget.** An image plus a hungry process can still cause an out-of-memory kill. `storage_gb` buys disk for `/`, never image room.
+- **Choose by workload:** `cpu-1` for image-heavy work on a budget, `cpu-4` for both room and RAM for builds, `storage_gb` when 5 GB is tight. Use `cpu-2`/`cpu-8` only when the workload needs the memory, and keep images small there.
 
-- **On the disk shapes there is one quota for everything** — `/`, `/tmp` and `/var/lib/docker` draw on the same pool, so a 3 GB file in `/root` leaves 3 GB less for images. Raise it with the SDK-only `storage_gb` (`Sandbox.create(..., instance_type="cpu-1", storage_gb=20)` gives docker 20 GB); there is no CLI flag for it.
-- **On the RAM shapes the cap is half the sandbox's memory** and those bytes count against your memory budget, so an image plus a hungry process can still push the sandbox into an out-of-memory kill. `storage_gb` buys disk for `/`, never image room.
-- **`df -h /var/lib/docker` reports the real ceiling** — trust it over any figure in this table. Older clusters report a large meaningless size instead: if you see hundreds of GB, nothing is bounding docker but the sandbox's own memory, and overrunning it kills the sandbox rather than failing the pull — keep images well under the RAM column.
-
-**Rules of thumb:** `cpu-1` for anything image-heavy on a budget, `cpu-4` when you want both room (40 GB) and RAM for builds, `storage_gb` when 5 GB is tight. Reach for `cpu-2`/`cpu-8` only when the workload itself needs the memory, and keep images small there.
-
-Running out of space is now an ordinary error rather than a fatality — a pull into a full data root fails with `no space left on device` and **the sandbox keeps running**, so you can delete images and retry:
+**A pull into a full data root fails with `no space left on device`, and the sandbox keeps running.** Delete images and retry:
 
 ```bash
 lightning sandbox run $SBX -- bash -lc 'docker system df; docker image prune -af; df -h /var/lib/docker'
 ```
 
-### Networking — the part you must adapt
+**Older clusters kill the sandbox instead.** There `df` reports a meaningless size of hundreds of GB, nothing bounds docker but the sandbox's memory, and overrunning it terminates the sandbox: every later call returns `429 sandbox terminated: out of memory`. Keep images well under the RAM column, or move to `cpu-1`/`cpu-4`.
+
+### Networking: the part you must adapt
 
 `dockerd` runs `--bridge=none --iptables=false --ip6tables=false`, so only the `host` and `none` docker networks exist (`docker network ls` confirms it):
 
-- **Run containers with `--network=host`.** Without it a container has no network at all — DNS fails (`wget: bad address`). Image *pulls* still work either way, since dockerd itself sits on the sandbox's netstack.
-- **Build with `--network=host`** (compose: `build: {context: ., network: host}`), or every `RUN` step dies with `failed to solve: ... network bridge not found`.
-- **Container→container over `127.0.0.1:<port>`**, never a compose service name — host networking means no bridge DNS, so `db` or `api` dies with `gaierror: [Errno -2] Name or service not known`. Plain `localhost` resolves fine; it is the service names that don't exist.
-- **`-p 8080:80` is silently ignored** — port publishing belongs to the bridge, and host networking has none. The container is already on the sandbox's netstack, so the process inside must *listen on* the port you want (`nginx` configured for 8080, `uvicorn --port 8080`); remapping it from the outside is not possible. `docker run -p` exits 0 and serves nothing.
-- A host-networked container listening on `:8080` is what the sandbox's public URL for 8080 serves — declare `--port 8080` / `ports=[8080]` at create, then `sb.get_port_url(8080)`.
+- **Run containers with `--network=host`, or they have no network at all.** DNS fails with `wget: bad address`. Image pulls still work either way, since dockerd itself sits on the sandbox's netstack.
+- **Build with `--network=host`, or every `RUN` step dies** with `failed to solve: ... network bridge not found`. In compose: `build: {context: ., network: host}`.
+- **Reach other containers at `127.0.0.1:<port>`, never by compose service name.** Host networking has no bridge DNS, so `db` or `api` dies with `gaierror: [Errno -2] Name or service not known`. Plain `localhost` resolves fine.
+- **`-p 8080:80` is silently ignored: `docker run -p` exits 0 and serves nothing.** Port publishing belongs to the bridge. The process inside must listen on the port you want (`nginx` configured for 8080, `uvicorn --port 8080`). That port is what the sandbox's public URL serves, if you declared it at create (`--port 8080` / `ports=[8080]`, then `sb.get_port_url(8080)`).
 
-Compose template that works as-is (FastAPI + Redis; run `docker compose up -d --build` detached with a generous timeout, since builds pull layers):
+Compose template that works as-is (FastAPI + Redis). Run `docker compose up -d --build` detached with a generous timeout, since builds pull layers:
 
 ```yaml
 services:
@@ -207,12 +207,10 @@ services:
 
 ### Docker gotchas
 
-- **Where images live depends on the instance type** — disk on `cpu-1`/`cpu-4`, RAM everywhere else — and it decides both your ceiling and whether `storage_gb` helps. See [Where images are stored](#where-images-are-stored-and-how-much-room-you-get); getting this wrong is the difference between a 5 GB budget and a 4.4 GB one that also competes with your processes.
-- **A full data root fails the pull, it no longer kills the sandbox.** Both backings return `no space left on device` and stay up. If you are on an older cluster you may still hit the historical behaviour, where the sandbox was terminated and every later call returned `429 sandbox terminated: out of memory` — if you see that, you overran the data root, so drop to a smaller image or move to `cpu-1`/`cpu-4`.
-- **Restricted egress and image pulls don't mix.** Under `network_policy="deny-all"` dockerd still starts, but every pull fails after a long stall with `Get "https://registry-1.docker.io/v2/": context deadline exceeded`. A CIDR allowlist doesn't rescue it: allowlisting the resolvers (`1.1.1.1/32`, `8.8.8.8/32`, see the DNS gotcha below) does fix name resolution, and the pull then dies waiting on registry IPs you would have to enumerate — which Docker Hub serves from a shifting CDN. Bake the images into a custom image, or pull under the default open egress.
-- Docker Engine is pinned to **v27** (`docker info` shows the exact build) and v28+ is known-broken in this environment — don't upgrade it in-sandbox, it is unsupported. Docker is CPU-sandbox only, never GPU.
-- On a plain runtime, `docker` and `dockerd` are **absent** and `mount` returns `permission denied`, so you cannot add Docker after the fact — choose a `-docker` runtime at create time.
-- There is no `docker` field on the REST API. If you drive `/v1/core/sandboxes` directly, send `"runtime": "node24-docker"`.
+- **Image pulls fail under restricted egress; pull under the default open egress or bake images into a custom image.** Under `network_policy="deny-all"` dockerd still starts, but every pull stalls, then fails with `Get "https://registry-1.docker.io/v2/": context deadline exceeded`. A CIDR allowlist that includes the resolvers (see the DNS gotcha below) fixes name resolution, but the pull then waits on registry IPs, which Docker Hub serves from a shifting CDN.
+- **Docker Engine is pinned to v27; don't upgrade it in-sandbox.** v28+ is known-broken here and unsupported. `docker info` shows the exact build. Docker is CPU-sandbox only, never GPU.
+- **You cannot add Docker to a plain runtime after create; pick a `-docker` runtime up front.** On a plain runtime `docker` and `dockerd` are absent and `mount` returns `permission denied`.
+- **The REST API has no `docker` field.** If you drive `/v1/core/sandboxes` directly, send `"runtime": "node24-docker"`.
 
 ## Example workflows
 
@@ -291,17 +289,12 @@ lightning api "/v1/core/sandboxes/${SANDBOX_ID}/commands" -X POST -f command=ls 
 
 ## Gotchas
 
-- **Timeout units differ:** `create --timeout` / `extend_timeout()` / snapshot `--expiration` are **milliseconds**; `sandbox run --timeout` (detached wait) is **seconds**.
-- Sandboxes keep billing until stopped/deleted and are not cleaned up by garbage collection — always `stop()`/`delete()`, and set a create-time `timeout` as a safety net.
-- **`sandbox delete` and `sandbox snapshot delete` prompt for confirmation — pass `-y`/`--yes` non-interactively.** Without it they read the prompt from a closed stdin, print `Are you sure you want to delete? [y/N]: Aborted.` and exit **without deleting**. Given the point above, a cleanup step that silently aborts leaves the sandbox billing indefinitely — this is the single easiest way to leak money here.
-- **A CIDR allowlist does not implicitly permit DNS.** `allow_cidrs` is enforced at the IP layer, and the sandbox's `/etc/resolv.conf` points at `1.1.1.1` and `8.8.8.8` — outside any realistic application allowlist — so every hostname lookup fails with `Temporary failure in name resolution` while raw-IP connections work. Include the resolver addresses (`1.1.1.1/32`, `8.8.8.8/32`) in the allowlist, or point the sandbox at a resolver inside it.
-- **Files restored from a snapshot come back with mtime `1970-01-01T00:00:00Z`.** Epoch-zero timestamps break `make`, `ccache`, and pip/setuptools staleness checks — which bites hardest in the pre-baked-environment use case snapshots exist for. Touch files you depend on, or avoid mtime-based staleness logic in a restored sandbox.
-- **Egress policy is Python-SDK-only.** `sandbox create` has no network-policy flag, so `deny-all` and CIDR allowlists require dropping into `lightning_sdk`; everything else here (create, run, snapshot, list, delete) is CLI-doable.
-- **There is no cost surface for sandboxes.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404, no CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) don't appear in the priced accelerator catalog (or in `lightning machine list`) — so a sandbox run cannot be priced, even by hand. Budget with a create-time `timeout` rather than by measuring after.
-- Ephemeral (default) sandboxes lose everything on stop; only `persistent=True` gives stop/resume. Snapshots capture the filesystem only, never running processes.
-- **The default runtime is `node24` — Node.js only, no Python.** Pass `runtime="python313"` / `--runtime python313` for Python workloads (naming: `node22`, `node24`, `python313`, plus the `-docker` variants; invalid ids fail with "invalid runtime"). `image` (custom rootfs) is CPU/gVisor-only and mutually exclusive with `runtime`; private images need `image_secret_ref` pointing at a Docker-registry secret.
-- To run containers inside a sandbox, use a `-docker` runtime (`--runtime python313-docker`) or `docker=True` / `--docker` — never hand-install Docker on a plain runtime. See [Docker inside a sandbox](#docker-inside-a-sandbox), especially the `--network=host` requirement.
-- Public port URLs only exist for ports declared at create time (`ports=[8080]` / `--port 8080`); there is no way to expose a port later. `create` normally returns them already populated in `port_urls`; if empty, re-`get` the sandbox.
-- Network policy is **create-time only** — you cannot change egress rules on a running sandbox. Default is open egress (`allow-all`); use `"deny-all"` or CIDR allowlists for untrusted code.
-- Commands run as **root** inside the sandbox.
-- Scoped-key errors: the CLI and SDK turn the raw server errors into hints. `Use a teamspace- or org-scoped API key ...` (raw: "organization_id is required") → you're on a personal login key. `Your teamspace-scoped API key is not authorized for the project requested via teamspace= ...` (raw: "API key is not authorized for this project") → the key is bound to a different teamspace. `This operation requires a teamspace-scoped API key ...` → snapshot/stop with an org-scoped key. Only raw `lightning api` calls show the raw wording.
+- **Timeout units differ.** `create --timeout`, `extend_timeout()` and snapshot `--expiration` take milliseconds. `sandbox run --timeout` (detached wait) takes seconds.
+- **Sandboxes bill until stopped or deleted, and garbage collection never removes them.** Always `stop()`/`delete()`, and set a create-time `timeout` as a safety net.
+- **Without `-y`, `sandbox delete` and `sandbox snapshot delete` exit without deleting.** Non-interactively they read the prompt from a closed stdin, print `Are you sure you want to delete? [y/N]: Aborted.` and leave the sandbox billing. This is the easiest way to leak money here.
+- **There is no cost surface for sandboxes, so budget with a create-time `timeout`.** `/v1/billing/usage`, `/v1/projects/<pid>/usage` and `/v1/core/sandboxes/<id>/usage` all 404. No CLI reports spend, and sandbox instance types (`cpu-1`, `cpu-2`) are missing from the priced accelerator catalog and from `lightning machine list`, so a run cannot be priced even by hand.
+- **Egress policy is SDK-only and fixed at create.** `sandbox create` has no network-policy flag, so `deny-all` and CIDR allowlists need `lightning_sdk`. Everything else here is CLI-doable. You cannot change egress rules on a running sandbox. The default is open egress (`allow-all`); use `"deny-all"` or a CIDR allowlist for untrusted code.
+- **A CIDR allowlist does not permit DNS by itself.** `allow_cidrs` is enforced at the IP layer, and `/etc/resolv.conf` points at `1.1.1.1` and `8.8.8.8`. So every hostname lookup fails with `Temporary failure in name resolution` while raw-IP connections work. Add `1.1.1.1/32` and `8.8.8.8/32` to the allowlist, or point the sandbox at a resolver inside it.
+- **Files restored from a snapshot come back with mtime `1970-01-01T00:00:00Z`.** Epoch-zero timestamps break `make`, `ccache`, and pip/setuptools staleness checks. Touch files you depend on, or avoid mtime-based staleness logic in a restored sandbox.
+- **Commands run as root inside the sandbox.**
+- **Scoped-key errors come back as hints from the CLI and SDK.** `Use a teamspace- or org-scoped API key ...` (raw: "organization_id is required") → you're on a personal login key. `Your teamspace-scoped API key is not authorized for the project requested via teamspace= ...` (raw: "API key is not authorized for this project") → the key is bound to a different teamspace. `This operation requires a teamspace-scoped API key ...` → snapshot/stop with an org-scoped key. Only raw `lightning api` calls show the raw wording.

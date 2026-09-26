@@ -1,21 +1,17 @@
 ---
 name: lightning-artifacts
-description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser - plus list what's in the artifacts drive, unpublish (revoke) links, and delete the files behind them - entirely through the `lightning` CLI (from the `lightning-sdk` package) with regular auth (`lightning login` or an API key), no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
+description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser. Also lists the artifacts drive, unpublishes (revokes) links and deletes the files behind them, all through the `lightning` CLI (`lightning-sdk` package) with `lightning login` or an API key, no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
 ---
 
 # Lightning AI Artifacts (durable shareable file links)
 
-Publish any file to a teamspace and get back a **durable public URL** —
-`https://lightning.ai/artifacts/<id>` — that anyone can open with no Lightning
-login, renders inline in the browser (HTML/PDF/images), and **never expires**.
-The control plane streams the bytes from storage on every request, so unlike a
-presigned S3 URL there is no ~1h cap. Great for agent-generated one-pagers,
-reports, dashboards, dataset samples, or build artifacts.
+Publish a file to a teamspace and get a `https://lightning.ai/artifacts/<id>`
+URL that anyone can open without a Lightning login. The control plane streams
+the bytes from storage on every request, so unlike a presigned S3 URL the link
+never expires (no ~1h cap).
 
-**This whole flow runs through the `lightning` CLI** (from the `lightning-sdk` package):
-`lightning cp` / `ls` / `rm` handle the files, and `lightning api` — a
-`gh api`-style raw HTTP client — makes the two publish calls around them. No
-Python, no SDK code, not even a `curl`.
+**The whole flow is CLI-only.** `lightning cp` / `ls` / `rm` handle the files,
+and `lightning api` makes the publish and unpublish calls. No Python or `curl`.
 
 ## Setup & auth
 
@@ -55,18 +51,16 @@ params** when the request also has `--input` or is a GET.
 
 ## Resolve the teamspace (do this first)
 
-Artifacts live in a teamspace (a "project" in the REST API). You need three
-values: the **owner name** and **teamspace name** (for `lit://` upload URLs)
-and the **project id** (for the REST calls). **Never guess.** List memberships
-and, if more than one fits and none is configured, **ask the user which to
-use**:
+Artifacts live in a teamspace (a "project" in the REST API). You need the
+**owner name** and **teamspace name** (for `lit://` paths) and the **project
+id** (for REST calls). **Never guess.** If more than one membership fits and
+none is configured, **ask the user which to use**:
 
 ```bash
 lightning api /v1/memberships -q '.memberships[] | [.name, .projectId, .ownerType, .ownerId] | @tsv'
 ```
 
-Capture the row's `projectId` and resolve the owner's name. The membership
-only carries the owner's id, and the lookup depends on `ownerType`:
+The membership carries only the owner's id. Resolve the name by `ownerType`:
 
 ```bash
 PID=<projectId-from-above>
@@ -81,21 +75,20 @@ fi
 [ -n "$OWNER" ] && [ "$OWNER" != null ] || echo "could not resolve the owner of $TSNAME — ask the user" >&2
 ```
 
-Search by id and match on `.id` exactly (the search is fuzzy); this is the lookup
-the SDK itself uses. Never fall back to your own username: a wrong owner in the
-`lit://` path uploads into a different teamspace.
+The user search is fuzzy, so match `.id` exactly (the SDK does the same). Never
+fall back to your own username: a wrong owner in the `lit://` path uploads into
+a different teamspace.
 
-Teamspaces you can access through org-level permissions (rather than direct
-membership) don't appear in `/v1/memberships` — if the user names one you
-can't find, ask them for the `<owner>/<teamspace>` pair and the project id.
-There is no list-projects-by-name endpoint (`/v1/projects?name=…` isn't in the
-API), so don't try to look it up.
+Teamspaces reached through org-level permissions don't appear in
+`/v1/memberships`. If the user names one you can't find, ask them for the
+`<owner>/<teamspace>` pair and the project id. Don't try to look it up by name:
+`/v1/projects?name=…` doesn't exist.
 
 ## Publish a durable link (the CLI flow)
 
-Three calls: `lightning cp` the file into the `artifacts/` drive, read back
-which storage cluster it landed on, then register the object as a shared
-artifact. Copy-paste function:
+Three calls: upload into the `artifacts/` drive, read back the storage cluster
+it landed on, then register the object as a shared artifact. `share` and
+`shares` (below) need the `jq` binary; without it, parse the JSON yourself.
 
 ```bash
 # share <local-file> [remote-name] [content-type]
@@ -108,9 +101,7 @@ share() {
   local KEY="artifacts/${NAME#artifacts/}"     # publish only finds objects under artifacts/
   # 1. upload; the server picks where to store it (see Gotchas)
   lightning cp "$FILE" "lit://$OWNER/$TSNAME/$KEY" >&2 || return 1
-  # 2. the blob's clusterId from the listing is the storage cluster the
-  #    publish call needs (see Gotchas — it is not always the cluster the
-  #    upload went through)
+  # 2. publish needs the blob's storage cluster, read from the listing (see Gotchas)
   local CLUSTER; CLUSTER=$(lightning ls --json "lit://$OWNER/$TSNAME/$KEY" | jq -r '.[0].clusterId')
   # 3. register it -> durable, no-expiry lightning.ai/artifacts/<id>
   local LINK; LINK=$(lightning api "/v1/projects/$PID/shared-artifacts" -X POST \
@@ -124,23 +115,25 @@ share report.html                                  # -> https://lightning.ai/art
 share dashboard.html reports/dash.html text/html   # custom remote name + explicit type
 ```
 
-When you publish something for the user, always show them the full URL on its
-own line (terminals make it clickable) — never just say "done".
+**Always show the user the full URL on its own line**, never just "done".
+Terminals make it clickable.
 
-The upload path and the publish `filename` must point at the same object — the
-`KEY` variable keeps them identical. The server confines shares to the
-`artifacts/` folder; if you pass a bare `filename` (no `artifacts/` prefix) to
-publish it prepends one, but matching the two explicitly is clearest.
+**Shares are confined to the `artifacts/` folder.** Publish only finds objects
+under `lit://<owner>/<teamspace>/artifacts/...`. Files under `uploads/` or
+`lightning_storage/` can be copied with `lightning cp`, but publish won't find
+them. The `KEY` variable keeps the upload path and the publish `filename`
+identical. A bare `filename` gets `artifacts/` prepended by the server, but
+matching the two explicitly is clearest.
 
-Set `-F private=true` to require an authorized project reader to open the link
-(good for internal-only shares); the default `false` is genuinely public.
+**The default `private=false` link is open to anyone who has it, with no
+auth.** Set `-F private=true` so only authorized project readers can open it.
 
 ### Content types that render inline
 
-`file -b --mime-type` guesses most cases; pass an explicit type when the
-extension is ambiguous. The **publish** call's `contentType` is what the browser
-sees on every request (it overrides the stored object's type), so getting it
-right there is what makes HTML/PDF render instead of download.
+**The publish call's `contentType` decides whether HTML/PDF render or
+download.** It is set at publish time, not upload time, and overrides the
+stored object's type on every request. `file -b --mime-type` guesses most
+cases; pass an explicit type when the extension is ambiguous.
 
 | File | Content-Type |
 | --- | --- |
@@ -153,10 +146,10 @@ right there is what makes HTML/PDF render instead of download.
 
 ## List, see what's published, unpublish, delete
 
-**List what's in the drive** with `lightning ls` — one level by default,
-`-r` for every file underneath, `--json` for entries with `size` and the
-`clusterId` the publish call needs. Listings follow the server's pages
-automatically, so folders with many thousands of files come back complete:
+**`lightning ls` lists the drive completely, even for folders with many
+thousands of files.** It follows the server's pages. It shows one level by
+default, `-r` for every file underneath, and `--json` for entries with `size`
+and `clusterId`:
 
 ```bash
 lightning ls "lit://$OWNER/$TSNAME/artifacts/"              # one level; folders end in /
@@ -164,8 +157,9 @@ lightning ls -r "lit://$OWNER/$TSNAME/artifacts/reports"    # full relative file
 lightning ls --json "lit://$OWNER/$TSNAME/artifacts/reports"
 ```
 
-**List every published link** in the project (`GET /v1/projects/{pid}/shared-artifacts`,
-newest first — id, filename, content type, public/private, download count, URL):
+**`shares` lists every published link in the project, newest first.** It calls
+`GET /v1/projects/{pid}/shared-artifacts`, which returns id, filename, content
+type, public/private, download count and URL:
 
 ```bash
 # shares  ->  one block per published artifact
@@ -177,7 +171,7 @@ shares() {
 }
 ```
 
-**Unpublish** (revoke the link; the file itself stays in the drive):
+**`unshare` revokes a link but keeps the file in the drive:**
 
 ```bash
 # unshare <artifact-id>
@@ -186,11 +180,12 @@ unshare() {
     && echo "🗑️  Unpublished $1 — link is dead, file kept in the drive" >&2
 }
 
-unshare art_01kxgaep54zzs84arfns1j21wd
+unshare art_01kxgaep54zzs84arfns1j21wd   # illustrative id; take yours from shares
 ```
 
-**Delete the file itself** (after unpublishing, or to clean up an abandoned
-upload) — no cluster id needed; the server removes it wherever it is stored:
+**`lightning rm` deletes the file itself, with no cluster id.** The server
+removes it wherever it is stored. Use it after unpublishing, or to clean up an
+abandoned upload:
 
 ```bash
 lightning rm "lit://$OWNER/$TSNAME/artifacts/report.html"
@@ -200,10 +195,10 @@ lightning rm -r "lit://$OWNER/$TSNAME/artifacts/reports"     # a folder and ever
 `rm` fails on a path that doesn't exist (pass `-f` to ignore) and refuses a
 folder without `-r`.
 
-Re-publish the same object later (new id, new URL) by repeating the publish call
-with the same `filename`. Update the contents behind an existing link by
-re-running `lightning cp` to the same `artifacts/<name>` — published ids keep
-serving the new bytes. To change the served Content-Type, publish again.
+**Re-running `lightning cp` to the same `artifacts/<name>` updates the bytes
+behind existing links.** Their ids keep serving the new contents. Repeating the
+publish call with the same `filename` gives a new id and URL; do that to change
+the served Content-Type.
 
 ## Example workflows
 
@@ -211,19 +206,19 @@ Prompts this skill handles: *"share this HTML report as a permanent link"*,
 *"give me a public URL for output.pdf"*, *"publish this one-pager so I can send
 it"*, *"drop this file somewhere CI can curl it"*.
 
-**Share an agent-generated HTML one-pager** (renders in the browser, no login):
+**An agent-generated HTML one-pager needs only `share`; anyone can open the printed URL:**
 
 ```bash
 share summary.html                                 # hand the printed URL to anyone
 ```
 
-**Publish a folder of reports, one link each** (`share` prints each name + URL):
+**A loop over `share` publishes a folder of reports, one link each:**
 
 ```bash
 for f in out/*.html; do share "$f" "reports/$(basename "$f")" "text/html; charset=utf-8"; done
 ```
 
-**Hand a file to another service / CI job:**
+**`share` prints only the URL on stdout, so a CI job can capture and curl it:**
 
 ```bash
 URL=$(share model-metrics.json)
@@ -232,43 +227,29 @@ URL=$(share model-metrics.json)
 
 ## Gotchas
 
-- **Publish wants the blob's *storage* cluster, not the cluster the upload
-  went through.** A teamspace can be bound to compute clusters that store
-  their files under a parent cluster's bucket; publishing with such a compute
-  cluster's id fails with HTTP 500. The artifacts tree listing reports each
-  blob's real `clusterId` — always read it from there (the `share` function
-  does). Deletes don't take a cluster at all.
-- **`lightning cp` needs no cluster flag** — the server picks the storage.
-  Only if it rejects the upload for a missing cluster does `cp` choose one
-  itself (`LIGHTNING_CLUSTER_ID` first, which is set inside a Studio, then the
-  teamspace's only or default cloud account) and warn `No cloud account
-  specified. Using cloud account: <id>.` Pass
-  `--cloud-account <id>` only to steer placement deliberately, and pick a
-  cluster whose `status.phase` is `CLUSTER_STATE_RUNNING`
-  (`/v1/projects/$PID/clusters`) — bound-but-unusable clusters make the
-  upload fail with a drive error that says nothing about cluster health.
+- **Publishing with a compute cluster's id fails with HTTP 500; publish needs
+  the blob's storage cluster.** A teamspace can be bound to compute clusters
+  that store files under a parent cluster's bucket, so the upload cluster is not
+  always the storage cluster. Read the real `clusterId` from the listing, as
+  `share` does.
+- **`lightning cp` needs no cluster flag, because the server picks the
+  storage.** Only if the server rejects the upload for a missing cluster does
+  `cp` choose one itself (`LIGHTNING_CLUSTER_ID` first, which is set inside a
+  Studio, then the teamspace's only or default cloud account) and warn `No
+  cloud account specified. Using cloud account: <id>.` Pass `--cloud-account
+  <id>` only to steer placement deliberately, and pick a cluster whose
+  `status.phase` is `CLUSTER_STATE_RUNNING` (`/v1/projects/$PID/clusters`).
+  A bound but unusable cluster makes the upload fail with a drive error that
+  says nothing about cluster health.
 - **Unpublish reports success for links that don't exist.**
-  `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}` for an
-  id that was already revoked or simply mistyped — do not treat exit code 0 as
-  proof; verify by checking the public URL 404s. (`lightning rm`, by contrast,
-  fails on a missing path unless you pass `-f`.)
-- **The served HTML is not byte-identical to what you uploaded.** Cloudflare injects a
-  Browser-Insights RUM beacon (`static.cloudflareinsights.com/beacon.min.js`) into HTML
-  responses — a ~350-byte delta. Harmless for viewing, but don't promise a
-  bit-exact document, and don't checksum the response against the source file.
-- **Shares are confined to the `artifacts/` folder.** Publish only finds objects
-  under `projects/{pid}/artifacts/...`, so the upload must target
-  `lit://<owner>/<teamspace>/artifacts/...`. Files under `uploads/` or
-  `lightning_storage/` are reachable with `lightning cp` too, but publish
-  won't find them there.
-- **Content-Type is set at publish time**, not upload time — the serving handler
-  uses the shared-artifact record's `contentType`, overriding the stored object.
-  Set it on the publish call so HTML/PDF render inline.
-- The public link is genuinely open — anyone with it can fetch the file with no
-  auth. Use `-F private=true` for anything you don't want world-readable.
-- `-q` (jq filtering) and the `share`/`shares` helpers need the `jq` binary
-  installed; without it, parse the JSON yourself.
-- **The list endpoint is newer than the rest.** `GET
-  /v1/projects/{pid}/shared-artifacts` returns HTTP 501 "Method Not Allowed" on
-  control planes built before mid-July 2026 — publish/unpublish still work
-  there; only `shares` is affected.
+  `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}`
+  for an id that was already revoked or mistyped. Exit code 0 is not proof;
+  check that the public URL 404s.
+- **Served HTML is not byte-identical to the upload, so don't checksum it
+  against the source.** Cloudflare injects a Browser-Insights RUM beacon
+  (`static.cloudflareinsights.com/beacon.min.js`) into HTML responses. It is
+  harmless for viewing, but don't promise a bit-exact document.
+- **`shares` fails with HTTP 501 "Method Not Allowed" on control planes built
+  before mid-July 2026.** The list endpoint `GET
+  /v1/projects/{pid}/shared-artifacts` is newer than the rest. Publish and
+  unpublish still work there.
