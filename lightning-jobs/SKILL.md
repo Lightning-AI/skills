@@ -265,15 +265,13 @@ return `code: 5`.
 
 <!-- TODO: remove this workaround once the backend rejects a GPU request it can't fill instead of
 starting a CPU machine (Task Board: "CLI silently downgrades to CPU when a GPU SKU isn't available"). -->
-**Pick the cloud for a GPU job before launching.** The default cloud doesn't sell every GPU at
-every count (1× H200 isn't on AWS), and Studios asked for one have silently come up on CPU (see
-`lightning-studios`), so don't count on a job failing loudly. Read the catalog with `lightning api`
-(agent permission rules often block `curl`) and pass `--cloud <cluster-id>`; the provider →
-cluster-id table is in `lightning-cost-estimation` (*Cloud providers*):
+**Pick the cloud account for a GPU job before launching.** The default cloud doesn't sell every
+GPU at every count (1× H200 isn't on AWS), and Studios asked for one have silently come up on CPU
+(see `lightning-studios`), so don't count on a job failing loudly. Take the account from the
+listing above. From the CLI, pass it as `--cloud` with the GPU name, and put a hardware check first
+in the command:
 
 ```bash
-lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
-  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .availableInSeconds, .outOfCapacity] | @tsv'
 lightning job run --name my-job --teamspace owner/teamspace --machine H200 --cloud lightning-baremetal \
   --image python:3.12-slim --command "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
 ```
@@ -414,7 +412,7 @@ inspect <name>`, `lightning job logs <name>`.
 ## Gotchas
 
 - Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
-- **Prefer a job to a Studio for one-shot runs** (train, eval, batch). A job stops billing when its command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone notices.
+- **Prefer a job to a Studio for one-shot runs** (train, eval, batch). A job stops billing when its command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone notices. The exception is a short run on a tight deadline: the first job from a Studio waits about 5 minutes for its snapshot (see *Example workflows*), so a Studio started on the GPU, with a deadline that stops it, finishes sooner.
 - **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **`lightning job delete` prompts for confirmation — pass `-y`/`--yes` non-interactively.** Without it the command reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and exits **without deleting**. The job stays listed and keeps costing money, and the failure is easy to miss in a log.
 - **`--query` and `--severity` can't filter every *finished* job.** Where a job's logs are stored decides this: if its lines aren't in the newer log storage, a finished job falls back to its saved log file, which can't be filtered server-side. The CLI and SDK then raise `This job's logs are only available as a saved file ... filter locally` rather than returning nothing, so fetch unfiltered and `grep` locally. `--timestamps` works on both paths. While a job is still `Running` the filters are applied server-side and work.

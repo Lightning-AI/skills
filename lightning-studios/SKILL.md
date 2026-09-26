@@ -181,14 +181,15 @@ A Studio's cloud is fixed at creation (`studio switch` can't move it), and the d
 doesn't sell every GPU at every count: 1× H200 isn't on AWS. **Ask for a GPU the Studio's cloud
 doesn't sell and `studio start` comes up on CPU with only a "hasn't been vetted" warning.** So:
 
-1. **Pick a cloud that sells the GPU at your count.** Read the catalog with `lightning api`
-   (agent permission rules often block `curl`); the provider → cluster-id table is in
-   `lightning-cost-estimation` (*Cloud providers*). A reused Studio keeps its old cloud, so check
-   it in `lightning studio list` first and create a new Studio if it's the wrong one.
-2. **Set up on CPU on that cloud.** Installs, model downloads and CUDA source builds bill at GPU
+1. **Pick a cloud account that sells the GPU at your count.** The per-account listing in
+   *Machine types* shows only what each account can launch; create the Studio on that row's
+   account. A reused Studio keeps its old cloud, so check it in `lightning studio list` first and
+   create a new Studio if it's the wrong one.
+2. **Set up on CPU on that account.** Installs, model downloads and CUDA source builds bill at GPU
    rates otherwise. Builds need their target set, e.g. `TORCH_CUDA_ARCH_LIST=9.0` for H100/H200.
-3. **Switch to the GPU and check the hardware** before running anything. No GPU means stop the
-   Studio and go back to step 1; don't retry.
+3. **Switch with that row's `Machine`, wait until the Studio can run commands again, and check the
+   hardware** before running anything. No GPU means stop the Studio and go back to step 1; don't
+   retry.
 
 The first workflow below does exactly this.
 
@@ -196,25 +197,56 @@ The first workflow below does exactly this.
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
 
-**Set up on CPU, switch to a GPU, run, collect results, stop:**
+**Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
+can run commands, and `start()` can keep blocking after it can, so start in the background and
+poll for readiness with a deadline (see Gotchas):
 
-```bash
-lightning api "/v1/core/accelerators?cloudProvider=MACHINE" \
-  | jq -r '.accelerator[] | select(.family=="H200") | [.slugMultiCloud, .resources.gpu, .cost, .outOfCapacity] | @tsv'
-lightning studio start --name exp-1 --teamspace my-org/my-teamspace --machine CPU --cloud lightning-baremetal --create
-lightning cp -r ./src lit://my-org/my-teamspace/studios/exp-1/src/     # contents land in ~/src
-```
 ```python
-import time
-from lightning_sdk import Machine, Studio
-studio = Studio("exp-1", teamspace="my-org/my-teamspace")
+import threading, time
+from lightning_sdk import Machine, Studio, Teamspace
+
+ts = Teamspace("my-org/my-teamspace")
+# the fastest, then cheapest, 1x H200 across the teamspace's cloud accounts (see *Machine types*)
+rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
+        for m in ts.list_machines(cloud_account=a.cluster_id)
+        if m.family == "H200" and m.accelerator_count == 1]
+wait, cost, acct, gpu = min(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0))
+print(acct, gpu.name, f"${cost}/h", f"wait ~{wait}s")        # confirm with the user before the GPU starts
+
+studio = Studio("exp-1", teamspace=ts, cloud=acct, create_ok=True)
+# an existing Studio of that name is reused as is, on whatever cloud it was created on
+assert studio.cloud_account == acct, f"{studio.name} is on {studio.cloud_account}: pick a new name"
+
+def wait_ready(minutes=10):
+    deadline = time.time() + minutes * 60
+    while time.time() < deadline:
+        if str(studio.status).endswith("Running"):
+            out, code = studio.run_with_exit_code("python -c pass")   # not `true`: see Gotchas
+            if code == 0 and "setting things up" not in out:
+                return
+        time.sleep(10)
+    studio.stop()   # stuck in setup: create a new Studio rather than starting this one again
+    raise TimeoutError(f"{studio.name} never finished setup")
+
+threading.Thread(target=studio.start, kwargs={"machine": Machine.CPU}, daemon=True).start()
+wait_ready()
+studio.upload_folder("./src", "src")                          # after ready, so it lands at once
 studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
-studio.switch_machine(Machine.H200)
 try:                                                          # any failure from here stops the GPU
-    out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
-    gpus = out.splitlines() if code == 0 else []
+    try:
+        studio.switch_machine(gpu)                            # the row's Machine, not Machine.H200
+    except Exception as e:                                    # it can report this and switch anyway
+        if "cannot switch to a Studio" not in str(e):
+            raise
+    for _ in range(30):                                       # so trust nvidia-smi, not the call
+        out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
+        gpus = out.splitlines() if code == 0 else []
+        if gpus:
+            break
+        time.sleep(10)
     print(gpus)                                               # e.g. ['NVIDIA H200']
-    assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another cloud"
+    assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another account"
+    wait_ready()                                              # a new machine: wait until it can run commands
     # train.exit gets the exit code when training ends; clear the last run's before launching
     studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
     print(studio.run("tail -n 40 ~/src/train.log"))          # within the first minute: crashes show up in seconds
@@ -234,29 +266,10 @@ lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
 lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
-**Start a Studio and wait until it can run commands.** `Running` comes before the Studio is
-usable, and `start()` can keep blocking after it is. So poll for readiness with a deadline, rather
-than waiting on `start()`:
-
-```python
-import threading, time
-from lightning_sdk import Studio
-
-studio = Studio("exp-1", teamspace="my-org/my-teamspace", create_ok=True)
-threading.Thread(target=studio.start, daemon=True).start()   # pass machine=... for a GPU
-deadline = time.time() + 600
-while time.time() < deadline:
-    if str(studio.status).endswith("Running"):
-        out, code = studio.run_with_exit_code("python -c pass")   # not `true`: see Gotchas
-        if code == 0 and "setting things up" not in out:
-            break
-    time.sleep(10)
-else:
-    studio.stop()   # stuck in setup: a freshly created Studio is the fix, not another start
-    raise TimeoutError(f"{studio.name} never finished setup")
-studio.upload_file("train.py", "train.py")                  # now it lands on the machine at once
-print(studio.run("cd ~ && env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py"))   # see Gotchas
-```
+For a short run where setup is light (a `uv` script that declares its own dependencies), skip
+the CPU phase: create the Studio on the row's account, start it with `machine=gpu`, `wait_ready()`,
+`studio.upload_file("train.py", "train.py")`, then
+`studio.run("cd ~ && env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py")` (see Gotchas).
 
 **SSH in and run scripts interactively** (for a human user; agents should prefer `studio.run*` above since `ssh` opens an interactive shell):
 
@@ -285,7 +298,9 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
 - `studio create` does not attach compute; `studio start --create` does both.
 - **For a one-shot run (train, eval, batch), prefer a job (`lightning-jobs`).** A job stops billing
-  when its command exits, crash included; a crashed run on a Studio keeps the GPU billing.
+  when its command exits, crash included; a crashed run on a Studio keeps the GPU billing. The
+  exception is a short run on a tight deadline: the first job from a Studio waits about 5 minutes
+  for its snapshot, so run on a Studio started on the GPU, with a deadline that stops it.
 - **Before relaunching on a GPU, check the last attempt isn't still holding it**, or the new run
   hits `CUDA out of memory`: `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
   should print nothing.
@@ -299,6 +314,7 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`cloud=` / `--cloud` takes a cloud account *id*.** `Teamspace.cloud_accounts` returns display names such as `Lightning Cloud`, and `Studio(..., cloud="Lightning Cloud")` fails with `400 clusterID Lightning Cloud is invalid`. Use `Teamspace.cloud_account_objs[i].cluster_id` (here `lightning-baremetal`); see *Machine types* for listing each account's machines.
 - **`uv run` fails in a fresh Studio** (and in jobs launched from one) with `error: failed to symlink file from /system/conda/miniconda3/uv/cache/… to /system/conda/miniconda3/uv/venvs/…: No such file or directory`. The Studio's `UV_LIGHTNING_VIRTUALENV_ROOT` points at a folder that doesn't exist yet. Run `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run …`.
 - **`Running` is not ready.** Right after a start, commands can fail with `Error: We are still setting things up for you, please try again after the progress bar at the top of the Studio disappears.` `python`, `pip` and `uv` are shell aliases (`load_conda_and_run`) that refuse until setup is done, while a plain `true` succeeds much earlier, so poll with `studio.run_with_exit_code("python -c pass")` until that text is gone (see *Example workflows*; it took about 80 s on a restarted CPU Studio). When measured, a fresh H200 Studio took about 2 minutes, while another never finished setup across two starts and ~20 minutes of billed H200 time. If setup is still going after several minutes, stop the Studio and create a new one rather than starting it again.
+- **`studio.switch_machine()` can raise and still switch.** A CPU → H200 switch on `lightning-baremetal` raised `ApiException (400) … "cannot switch to a Studio"`, and 14 s later `nvidia-smi` on the Studio showed the H200. Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*; don't restart or re-switch on it.
 - **`studio.start()` and `lightning studio start` can block well past readiness**, and in the stuck case above they never returned. Run them in the background and poll, as in the example, rather than waiting on them.
 - **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character — `tail -c N` on a log with `é` or a progress bar, `head -c` on a text file — fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
 - **Upload after the Studio is ready, with `studio.upload_file`.** `lightning cp` into a running Studio goes through storage: a file copied during setup wasn't on the machine when it became usable, and appeared about 30 s later. `upload_file` on a ready Studio showed up at once. Check with `studio.run("ls ~")` before running anything that needs the file.
