@@ -104,7 +104,8 @@ def load_rows(tok, args):
         row = {"query": r["query"], "tools": tools, "gold": gold,
                "prompt": PROMPT.format(tools=json.dumps(tools), query=r["query"]),
                "target": " " + json.dumps(gold)}
-        if len(tok(row["prompt"] + row["target"])["input_ids"]) > args.max_len:
+        # counted as training builds it: prompt and target tokenized apart, plus the EOS token
+        if len(tok(row["prompt"])["input_ids"]) + len(tok(row["target"])["input_ids"]) + 1 > args.max_len:
             continue
         (test if len(test) < args.eval_n else train).append(row)
         if len(train) >= args.max_steps * args.batch_size:
@@ -123,9 +124,10 @@ def canonical(calls):
 
 
 def parse_calls(text):
-    """The model's first non-empty line as a list of {name, arguments}, or None if it isn't one."""
+    """The JSON at the start of the model's first non-empty line as a list of {name, arguments}, or
+    None if it isn't one. Anything after the JSON (a trailing period, say) is ignored."""
     try:
-        calls = json.loads(first_line(text))
+        calls, _ = json.JSONDecoder().raw_decode(first_line(text))
     except json.JSONDecodeError:
         return None
     if isinstance(calls, dict):
