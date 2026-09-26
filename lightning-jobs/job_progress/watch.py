@@ -19,7 +19,16 @@ from typing import Any
 
 from .core import ATTEMPT_FAILED, ENTRY_SCRIPT, FINAL_PHASES, STUDIO_HOME, fmt_duration, make_event, pct
 from .settings import statusline_hint
-from .store import append_events, ensure_dirs, pid_alive, progress_dir, read_json, session_dir, write_json
+from .store import (
+    append_events,
+    ensure_dirs,
+    install_launcher,
+    pid_alive,
+    progress_dir,
+    read_json,
+    session_dir,
+    write_json,
+)
 from .tracker import (
     EXIT_RE,
     LogTail,
@@ -134,6 +143,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     preflight(args.job, args.studio, args.teamspace)
     d = progress_dir()
     ensure_dirs(d)
+    install_launcher(d)  # keeps a registered status line on this, the newest, copy of the script
     if args.studio:
         name = f"{args.studio}:{args.log}"
         entry = {"kind": "studio", "name": name, "studio": args.studio, "log": args.log}

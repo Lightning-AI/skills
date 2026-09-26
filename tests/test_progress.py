@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -354,32 +355,58 @@ class LiveRunFindings(unittest.TestCase):
             self.assertIn("keeps their current status line", must(settings.statusline_hint("r", proj)))
             cmd = settings.statusline_snippet("my-line.sh")["statusLine"]["command"]
             self.assertIn("my-line.sh", cmd)
-            self.assertIn("progress.py", cmd)
+            self.assertIn(store.LAUNCHER, cmd)
             with open(os.path.join(proj, ".claude", "settings.local.json"), "w") as f:
                 f.write('{"statusLine": {"command": "python3 /x/progress.py statusline"}}')
-            self.assertIsNone(settings.statusline_hint("r", proj))
+            self.assertIsNone(settings.statusline_hint("r", proj))  # set up before the launcher existed
 
     def test_chained_statusline_runs_both(self):
-        cmd = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
-        env = dict(os.environ, LIGHTNING_PROGRESS_DIR=tempfile.mkdtemp())
+        d = Path(tempfile.mkdtemp())
+        store.install_launcher(d)
+        with mock.patch.dict(os.environ, LIGHTNING_PROGRESS_DIR=str(d)):
+            cmd = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
         out = subprocess.run(
-            ["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}', capture_output=True, text=True, env=env
+            ["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}', capture_output=True, text=True
         ).stdout
         self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
 
-    def test_config_carries_a_custom_state_folder(self):
+    def test_the_launcher_finds_the_state_without_the_session_environment(self):
         d = Path(tempfile.mkdtemp())
         store.ensure_dirs(d)
+        store.install_launcher(d)
         s = tracker.new_state("r1")
         s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
         store.write_json(d / "state" / "r1.json", s)
         with mock.patch.dict(os.environ, LIGHTNING_PROGRESS_DIR=str(d)):
             cmd = settings.statusline_snippet(None)["statusLine"]["command"]
-        self.assertIn("--dir", cmd)
-        # the status line runs without the session's environment, and still finds the run
         env = {k: v for k, v in os.environ.items() if k != "LIGHTNING_PROGRESS_DIR"}
         out = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env).stdout
         self.assertIn("r1", out)
+
+    def test_the_launcher_stays_quiet_when_the_plugin_version_is_gone(self):
+        d = Path(tempfile.mkdtemp())
+        launcher = store.install_launcher(d)
+        (d / store.ENTRY_FILE).write_text("/plugins/cache/lightning/1.0.0/lightning-jobs/progress.py\n")
+        out = subprocess.run([sys.executable, str(launcher)], input="{}", capture_output=True, text=True)
+        self.assertEqual((out.returncode, out.stdout, out.stderr), (0, "", ""))
+
+    def test_user_config_targets_user_settings_and_warns_about_project_overrides(self):
+        home, proj, d = (Path(tempfile.mkdtemp()) for _ in range(3))
+        (proj / ".claude").mkdir()
+        (proj / ".claude" / "settings.json").write_text('{"statusLine": {"command": "their-line.sh"}}')
+        env = dict(os.environ, HOME=str(home), CLAUDE_PROJECT_DIR=str(proj))
+        out = subprocess.run(
+            [sys.executable, str(ENTRY), "--dir", str(d), "statusline", "--config", "--user"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        cmd = json.loads(out.stdout)["statusLine"]["command"]
+        self.assertIn(store.LAUNCHER, cmd)
+        self.assertNotIn("their-line.sh", cmd)  # a project's own line isn't chained into the user's
+        self.assertIn(str(home / ".claude" / "settings.json"), out.stderr)
+        self.assertIn("hides this one in that project", out.stderr)
+        self.assertTrue((d / store.LAUNCHER).exists())
 
     def test_events_only_read_and_outlive_a_failed_attempt(self):
         d = Path(tempfile.mkdtemp()) / "not-yet"  # a sandboxed Monitor can't create this
