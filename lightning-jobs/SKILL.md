@@ -325,11 +325,26 @@ import threading, time
 from lightning_sdk import Job, Studio
 
 studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
-threading.Thread(target=studio.start, daemon=True).start()   # CPU is enough: it only holds the files
+# an existing Studio of that name is reused as is, on whatever cloud it was created on
+assert studio.cloud_account == ACCOUNT, f"{studio.name} is on {studio.cloud_account}: pick a new name"
+failed = []                                                   # start() errors surface here, not in the thread
+def _start():
+    try:
+        studio.start()                                        # CPU is enough: it only holds the files
+    except Exception as e:
+        failed.append(e)
+threading.Thread(target=_start, daemon=True).start()
 # Running is not ready, and start() can block past readiness (lightning-studios skill, Gotchas)
-while not (str(studio.status).endswith("Running")
-           and "setting things up" not in studio.run_with_exit_code("python -c pass")[0]):
+deadline = time.time() + 600
+while time.time() < deadline and not failed:
+    if str(studio.status).endswith("Running"):
+        out, code = studio.run_with_exit_code("python -c pass")
+        if code == 0 and "setting things up" not in out:
+            break
     time.sleep(10)
+else:
+    studio.stop()   # stuck in setup: create a new Studio rather than starting this one again
+    raise failed[0] if failed else TimeoutError(f"{studio.name} never finished setup")
 studio.upload_file("train.py", "train.py")       # lands in the Studio home, the job's working dir
 job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
               command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas

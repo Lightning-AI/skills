@@ -119,7 +119,7 @@ def first_line(text):
 
 def canonical(calls):
     """Order-insensitive multiset of (name, arguments), so '[a, b]' matches '[b, a]'."""
-    return Counter((c["name"], json.dumps(c.get("arguments", {}), sort_keys=True)) for c in calls)
+    return Counter((c["name"], json.dumps(c.get("arguments"), sort_keys=True)) for c in calls)
 
 
 def parse_calls(text):
@@ -140,7 +140,8 @@ def score(row, text):
     calls = parse_calls(text)
     if calls is None:
         return False, False, False
-    valid = all(c["name"] in {t["name"] for t in row["tools"]} for c in calls)
+    tools = {t["name"] for t in row["tools"]}
+    valid = all(c["name"] in tools and isinstance(c.get("arguments"), dict) for c in calls)
     names = sorted(c["name"] for c in calls) == sorted(c["name"] for c in row["gold"])
     return canonical(calls) == canonical(row["gold"]), names, valid
 
