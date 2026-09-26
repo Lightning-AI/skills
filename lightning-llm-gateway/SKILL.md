@@ -5,7 +5,7 @@ description: Call hosted LLMs (OpenAI GPT, Anthropic Claude, Google Gemini, open
 
 # Lightning AI LLM Gateway (Models API)
 
-The LLM gateway gives one API + one bill for models from multiple providers. Model names are `provider/model`, e.g. `openai/gpt-4o`, `anthropic/claude-3-5-sonnet-20240620`, `google/gemini-2.5-pro`, `lightning-ai/gpt-oss-120b`. Note: **`LLM` is not exported at package top level** — import from `lightning_sdk.llm`.
+The LLM gateway gives one API + one bill for models from multiple providers. Model names are `provider/model` (see [Finding model names](#finding-model-names)). **Import `LLM` from `lightning_sdk.llm`; it is not exported at package top level.**
 
 ## Setup & auth
 
@@ -18,18 +18,17 @@ lightning --version   # must print "Lightning CLI version …"; if not, see the 
 lightning login   # or headless: export LIGHTNING_USER_ID=... LIGHTNING_API_KEY=...
 ```
 
-This uses, and if needed installs into, the environment the agent runs in (the user's project
-venv, a conda env, …). Then call plain `lightning …` everywhere. If setup doesn't go cleanly:
+This uses, and if needed installs into, the agent's current environment (project venv, conda env,
+…); then call plain `lightning …` everywhere. If setup doesn't go cleanly:
 
 | Symptom | Fix |
 |---|---|
-| Both installs fail: no active env, or pip refuses with `externally-managed-environment` | Install it on its own instead: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), then call `"$(uv tool dir --bin)/lightning"` if that dir isn't on `PATH` |
-| `lightning --version` still prints no `Lightning CLI version` line after installing | `command -v lightning` shows which one runs. Another tool owns the name (PyTorch Lightning also installs a `lightning` command), or the env you installed into isn't on `PATH`: activate it (`source .venv/bin/activate`) or call its `bin/lightning` by full path |
-| `No such command`, `No such option` or `unexpected extra argument` | The CLI is older than this skill expects: `uv pip install -U lightning-sdk` (or `pip install -U lightning-sdk`) in the env `command -v lightning` points into; `uv tool upgrade lightning-sdk` for a uv tool install |
-| The upgrade fails on a version conflict with the project's own pins | Don't fight the pins: install it outside the project with `uv tool install lightning-sdk` and call `"$(uv tool dir --bin)/lightning"` |
-| Installing is blocked (read-only env or home, agent sandbox) | Skip it and run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …` |
-| Every call fails on SSL/certificates, even `lightning --version` (`Could not find a suitable TLS CA certificate bundle`), only inside an agent sandbox | A `**/*.pem` read-deny rule is hiding certifi's public CA bundle (`site-packages/certifi/cacert.pem`). Allow that one path; don't disable the sandbox |
-| Every call fails with `NameResolutionError`, only inside an agent sandbox | If `lightning api` fails too, ask the user to allow `lightning.ai` and `*.lightning.ai` (Claude Code: `/sandbox`). If only `studio`/`job` commands or the SDK fail, they bypass the sandbox's proxy and no allowlist helps: ask to run just those outside the sandbox. Background pollers fail the same way, silently |
+| No active env, `externally-managed-environment`, or a conflict with the project's own pins | Install it on its own: `uv tool install lightning-sdk` (or `pipx install lightning-sdk`), and call `"$(uv tool dir --bin)/lightning"` if that isn't on `PATH` |
+| Still no `Lightning CLI version` line after installing | Another `lightning` (PyTorch Lightning's) or an inactive env comes first: check `command -v lightning`, then activate the env or call its `bin/lightning` |
+| `No such command`, `No such option` or `unexpected extra argument` | The CLI is too old: upgrade it where `command -v lightning` points (`uv pip install -U lightning-sdk`, or `uv tool upgrade lightning-sdk`) |
+| Installing is blocked (read-only env or home, agent sandbox) | Run each command as `UV_CACHE_DIR="${TMPDIR:-/tmp}/uv" UV_TOOL_DIR="${TMPDIR:-/tmp}/uv-tools" uvx lightning-sdk …` |
+| SSL/CA errors on every call, even `lightning --version`, only inside an agent sandbox | A `**/*.pem` read-deny rule hides certifi's `cacert.pem`: allow that one path; don't disable the sandbox |
+| `NameResolutionError`, only inside an agent sandbox | If `lightning api` fails too, ask the user to allow `lightning.ai` and `*.lightning.ai` (`/sandbox`). If only `studio`/`job` commands or the SDK fail, they bypass the sandbox proxy: run just those outside it. Background pollers fail the same way, silently |
 
 The `LLM` class is Python. The install above also makes `lightning_sdk` importable in that env,
 so snippets run with its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run
@@ -57,7 +56,8 @@ print(llm.chat("Summarize this...", system_prompt="Be terse", max_completion_tok
 for chunk in llm.chat("Tell a story", stream=True):
     print(chunk, end="")
 
-# multi-turn: reuse the same conversation name across calls
+# multi-turn: reuse the same conversation name across calls. History persists server-side
+# under that name; set LIGHTNING_EPHEMERAL=true to persist nothing
 llm.chat("What is CUDA?", conversation="cuda-help")
 llm.chat("Show an example", conversation="cuda-help")
 print(llm.get_history("cuda-help"))        # [{"role": "user"|"assistant", "content": ...}]
@@ -71,7 +71,7 @@ llm.chat("What's in this image?", images=["./photo.png"])
 llm.chat("...", reasoning_effort="high")   # none|low|medium|high
 # there is no temperature/top_p: extra **kwargs are silently dropped, not sent to the model
 
-# model info & pricing
+# model info & pricing: every chat() call is billed to the resolved teamspace
 print(llm.context_length)
 m = llm.metadata                            # prompt_price, completion_price, max_completion_tokens,
                                             # capabilities, throughput, time_to_first_token
@@ -79,9 +79,14 @@ m = llm.metadata                            # prompt_price, completion_price, ma
 
 Async: `LLM("...", enable_async=True)` makes `chat()` awaitable (async generator when streaming). The async path silently ignores `tools` and `reasoning_effort`.
 
-### Known gateway models
+### Finding model names
 
-`openai/gpt-4o`, `openai/gpt-4`, `openai/o3-mini`, `openai/gpt-5`, `openai/gpt-5-mini`, `openai/gpt-5-nano`, `anthropic/claude-3-5-sonnet-20240620`, `google/gemini-2.5-pro`, `google/gemini-2.5-flash`, `google/gemini-2.5-flash-lite-preview-06-17`, `lightning-ai/DeepSeek-V3.1`, `lightning-ai/gpt-oss-20b`, `lightning-ai/gpt-oss-120b`. The set evolves — an unknown `provider/model` raises at construction; check the lightning.ai Model APIs page for the current catalog. Any other prefix (`myorg/my-assistant`) resolves as a custom org/user assistant.
+**There is no `llm.list_models()`; get the current catalog from the lightning.ai Model APIs page.** The SDK also keeps a static map of known public models in `lightning_sdk/llm/public_assistants.py`. It is used only when `LIGHTNING_CLOUD_URL` is `https://lightning.ai` (in practice, inside Studios). Elsewhere the SDK asks the server, so models outside the map can still resolve.
+
+Illustrative names (the set changes): `openai/gpt-4o`, `anthropic/claude-3-5-sonnet-20240620`, `google/gemini-2.5-pro`, `lightning-ai/gpt-oss-120b`.
+
+- An unknown `provider/model` raises at construction.
+- Any other prefix (`myorg/my-assistant`) resolves as a custom org/user assistant.
 
 ## Example workflows
 
@@ -108,15 +113,7 @@ for model in ["openai/gpt-4o", "anthropic/claude-3-5-sonnet-20240620", "google/g
     print(llm.chat(prompt, max_completion_tokens=300))
 ```
 
-**Long-running assistant with memory (multi-turn conversation persisted server-side):**
-
-```python
-llm = LLM("openai/gpt-4o", teamspace="my-org/my-teamspace")
-llm.chat("You'll help me refactor a Go service. Here's the layout: ...", conversation="refactor")
-llm.chat("Now write the storage interface we discussed", conversation="refactor")   # remembers context
-print(llm.get_history("refactor"))
-llm.reset_conversation("refactor")   # wipe when done
-```
+**Long-running assistant with memory:** use the multi-turn `conversation=` calls in the [Python SDK](#python-sdk) block, and `reset_conversation()` when done.
 
 ## API keys for direct REST access
 
@@ -128,13 +125,13 @@ lightning api-key create --org NAME --name my-key
 lightning api-key list; lightning api-key delete <KEY_ID>
 ```
 
-If the user has multiple orgs, pass `--org` or set `LIGHTNING_ORG` — otherwise the key may be scoped to the wrong org. The exact OpenAI-compatible base URL is documented on the lightning.ai Model APIs page (it is not hardcoded in the SDK); the SDK's own `LLM.chat()` uses Lightning's assistants endpoint (`POST /v1/agents/{assistant_id}/conversations`) instead.
+If the user has multiple orgs, pass `--org` or set `LIGHTNING_ORG`; otherwise the key may be scoped to the wrong org. The exact OpenAI-compatible base URL is documented on the lightning.ai Model APIs page (it is not hardcoded in the SDK); the SDK's own `LLM.chat()` uses Lightning's assistants endpoint (`POST /v1/agents/{assistant_id}/conversations`) instead.
 
 Don't conflate auth schemes: platform SDK/REST calls use Basic auth (`user_id:api_key`) when both `LIGHTNING_USER_ID` and `LIGHTNING_API_KEY` are set, and send the key alone as `Bearer` otherwise; model-API endpoints take `Bearer` with a key from `lightning api-key get`.
 
 ## Model checkpoint registry (separate concept)
 
-`lightning model` manages **binary model artifacts** in a teamspace store — unrelated to gateway inference. Names are `org/teamspace/model[:version]`:
+`lightning model` manages **binary model artifacts** in a teamspace store, unrelated to gateway inference. Names are `org/teamspace/model[:version]`:
 
 ```bash
 lightning model upload   my-org/my-teamspace/my-model ./checkpoints          # PATH is positional; only option is --cloud-account
@@ -149,10 +146,6 @@ paths = download_model("my-org/my-teamspace/my-model")
 
 ## Gotchas
 
-- Every `chat()` call costs money, billed to the resolved teamspace; check `llm.metadata` for per-token prices when cost matters.
-- The first `LLM(...)` constructed in a process freezes teamspace/auth resolution for all later instances (class-level cache) — set `teamspace=` on the first one.
-- Conversations persist server-side under their name; set `LIGHTNING_EPHEMERAL=true` to avoid persisting anything.
-- There is no `llm.list_models()`. Known public models are a static map in the SDK (`lightning_sdk/llm/public_assistants.py`), used only when `LIGHTNING_CLOUD_URL` is `https://lightning.ai` (in practice, inside Studios); elsewhere the SDK asks the server, so models outside the map can still resolve.
-- `tools=` and `reasoning_effort=` are only honored on the sync (non-async) path.
-- **`teamspace="<user>/<teamspace>"` (a personal teamspace) can fail outside a Studio** with `Teamspace ID is missing from the resolved authentication information.` — an SDK bug: the user-owned lookup succeeds but never records the teamspace id. Inside a Studio it silently bills the Studio's own teamspace instead. Use an org-owned teamspace, or run inside a Studio of the teamspace you want billed.
-- Reasoning models (`openai/gpt-5*`) spend `max_completion_tokens` on internal reasoning first — small budgets (≤100) yield empty responses or intermittent client-side deserialization `TypeError`s. Give them a generous budget (1000+) or omit the cap.
+- **The first `LLM(...)` in a process freezes teamspace/auth resolution for all later instances, so set `teamspace=` on the first one.** The cache is class-level.
+- **A personal teamspace (`teamspace="<user>/<teamspace>"`) can fail outside a Studio, so use an org-owned teamspace or run inside a Studio of the teamspace you want billed.** The error is `Teamspace ID is missing from the resolved authentication information.` (an SDK bug). Inside a Studio it silently bills the Studio's own teamspace instead.
+- **Reasoning models (`openai/gpt-5*`) return empty responses on small `max_completion_tokens` budgets, so give them 1000+ or omit the cap.** They spend the budget on internal reasoning first. At 100 or less you may also get intermittent client-side deserialization `TypeError`s.
