@@ -5,7 +5,7 @@
     progress.py watch --studio STUDIO --log PATH [--run RUN] [--teamspace OWNER/TS]
     progress.py abandon RUN [--note TEXT]
     progress.py events [--run RUN] [--from-start] [--all]
-    progress.py statusline [--config]
+    progress.py statusline [--config [--user]]
 
 `watch` is the background poller. It follows the job's logs, reads `PROGRESS <step>/<total>`
 lines (tqdm bars as a fallback) and `PROGRESS_PHASE <name>` stage markers, and tracks a *run*:
@@ -83,6 +83,11 @@ def main(argv: list[str] | None = None) -> int:
         "--config",
         action="store_true",
         help="print the statusLine setting to add (run from the directory Claude Code was started in)",
+    )
+    s.add_argument(
+        "--user",
+        action="store_true",
+        help="with --config: the setting for ~/.claude/settings.json, so every project shows the bars",
     )
     s.set_defaults(module="statusline", fn="cmd_statusline")
 

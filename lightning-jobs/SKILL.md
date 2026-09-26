@@ -371,8 +371,8 @@ python3 <SKILL_DIR>/progress.py watch train-run-42 --teamspace my-org/my-teamspa
 final. State goes to `~/.local/state/lightning-progress/`, so it doesn't matter which directory
 `watch`, the Monitor or the status line runs in. Keep that default. If you do move it, with
 `--dir PATH` before the command or `LIGHTNING_PROGRESS_DIR`, use the same folder for `watch`,
-`events` and `statusline --config`; the last one writes it into the status-line command, since
-the status line doesn't inherit the session's environment.
+`events` and `statusline --config`. The status-line command points at a launcher inside that
+folder, since the status line doesn't inherit the session's environment.
 
 **Work running in a Studio** has no job log stream, so point `watch` at the log file instead.
 Start the process so its last line records the exit code, then watch that file. Paths are
@@ -402,20 +402,30 @@ Routine progress (10% milestones, stage changes) stays in the status-line bar, s
 interrupt the session. Where there is no bar (the desktop app, IDE extensions, or the user
 declined it), add `--all` to get those too, and keep the updates to a line each.
 
-**4. Always offer the status-line bar.** It is the only live, always-visible view. Right after starting `watch`, ask the user whether to add it, unless
-`watch` found it already set up. If it isn't, the Monitor's first event says so. Ask it as its own
-question with the ask-user tool, not as a line inside a status update, where it is easy to miss.
-On a yes, run this from the directory Claude Code was started in (not a parent or subfolder),
-and merge what it prints into that directory's `.claude/settings.local.json`:
+**4. Offer the status-line bar once.** It is the only live, always-visible view. If `watch`
+found it already set up, skip this step; otherwise its first event (and the Monitor's) says so.
+Right after starting `watch`, ask with the ask-user tool, as its own question rather than a line
+inside a status update, where it is easy to miss:
+
+- **All projects (recommend this).** One setup, and no question again in later sessions or
+  other projects. Run the first command and merge what it prints into `~/.claude/settings.json`.
+- **This project only.** Run the second command from the directory Claude Code was started in
+  (not a parent or subfolder) and merge what it prints into that directory's
+  `.claude/settings.local.json`.
 
 ```bash
-python3 <SKILL_DIR>/progress.py statusline --config
+python3 <SKILL_DIR>/progress.py statusline --config --user   # all projects
+python3 <SKILL_DIR>/progress.py statusline --config          # this project only
 ```
 
-It prints the `statusLine` block with this script's absolute path and a 3 s refresh. If the user
-already has a status line, the block runs theirs first and adds the bars below it. The bar
-shows in the terminal only; the desktop app and IDE extensions don't draw status lines, so
-there the Monitor events (with `--all`) are the view.
+Claude Code asks for approval before the edit, because settings files are protected; that is
+expected, and no rule can pre-approve it. The block runs a small launcher in the state folder
+that always starts the newest `progress.py` (`watch` keeps it current), so a plugin update
+doesn't break it. It prints nothing while no run is active, and if the user already has a
+status line, it runs theirs first and adds the bars below. The comments printed alongside say
+if a project's own status line would hide a user-level one. The bar shows in the terminal
+only; the desktop app and IDE extensions don't draw status lines, so there the Monitor events
+(with `--all`) are the view.
 
 ```
 ▶ train-run-42  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░   71%  stage 3/3 · attempt 2 · ↺1 (+1m35s) · $1.41

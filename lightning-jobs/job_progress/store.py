@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .core import ENTRY_SCRIPT
+
 
 def progress_dir() -> Path:
     env = os.environ.get("LIGHTNING_PROGRESS_DIR")
@@ -19,6 +21,41 @@ def progress_dir() -> Path:
 def ensure_dirs(d: Path) -> None:
     (d / "state").mkdir(parents=True, exist_ok=True)
     (d / "runs").mkdir(parents=True, exist_ok=True)
+
+
+# The status-line setting points here rather than at progress.py: plugin files live in a folder
+# named after the plugin version, which disappears on update. This launcher never changes; it
+# runs whichever progress.py last recorded itself in ENTRY_FILE, and prints nothing if that's gone.
+LAUNCHER = "lightning-progress-statusline.py"
+ENTRY_FILE = "entry.txt"
+LAUNCHER_CODE = '''\
+"""Runs the newest lightning-jobs progress.py for the Claude Code status line."""
+import os
+import runpy
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+try:
+    with open(os.path.join(here, "entry.txt")) as f:
+        entry = f.read().strip()
+except OSError:
+    sys.exit(0)
+if not os.path.isfile(entry):
+    sys.exit(0)
+sys.argv = [entry, "--dir", here, "statusline"]
+sys.path.insert(0, os.path.dirname(entry))
+runpy.run_path(entry, run_name="__main__")
+'''
+
+
+def install_launcher(d: Path) -> Path:
+    """Write the launcher and point it at this copy of progress.py; returns the launcher's path."""
+    d.mkdir(parents=True, exist_ok=True)
+    launcher = d / LAUNCHER
+    if not launcher.exists() or launcher.read_text() != LAUNCHER_CODE:
+        launcher.write_text(LAUNCHER_CODE)
+    (d / ENTRY_FILE).write_text(ENTRY_SCRIPT + "\n")
+    return launcher
 
 
 def session_dir() -> str:

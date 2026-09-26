@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .core import FINAL_PHASES, FINAL_VISIBLE_FOR, STATE_STALE_AFTER, bar, fmt_duration, pct
-from .settings import SETTINGS_FILES, statusline_setting, statusline_snippet
-from .store import pid_alive, progress_dir, read_json, session_dir
+from .settings import SETTINGS_FILES, is_ours, statusline_setting, statusline_snippet, user_settings
+from .store import install_launcher, pid_alive, progress_dir, read_json, session_dir
 
 MAX_STATUS_ROWS = 10
 
@@ -175,23 +175,32 @@ def shown(d: Path, s: dict[str, Any], now: float) -> bool:
     return pid_alive((read_json(d / "runs" / f"{s['run']}.json") or {}).get("pid"))
 
 
+def print_config(user: bool) -> int:
+    """Print the statusLine block, and where to merge it, on stderr."""
+    project_dir = session_dir()
+    target = user_settings() if user else os.path.join(project_dir, SETTINGS_FILES[0])
+    path, cmd = statusline_setting(project_dir, user=user)
+    print(json.dumps(statusline_snippet(cmd), indent=2))
+    notes = [f"# merge into {target}"]
+    if cmd and is_ours(cmd):
+        notes.append(f"# already set up in {path}")
+    elif cmd:
+        notes.append(f"# replaces the status line set in {path}, and still runs it")
+    if user:
+        own, own_cmd = statusline_setting(project_dir)
+        if own_cmd and own != user_settings() and not is_ours(own_cmd):
+            notes.append(f"# note: {own} sets its own status line, which hides this one in that project")
+    try:
+        install_launcher(progress_dir())
+    except OSError:  # e.g. inside an agent sandbox; the poller writes it when it starts
+        notes.append("# the launcher it runs is written by `progress.py watch` when it starts")
+    print("\n".join(notes), file=sys.stderr)
+    return 0
+
+
 def cmd_statusline(args: argparse.Namespace) -> int:
     if args.config:
-        project_dir = session_dir()
-        path, cmd = statusline_setting(project_dir)
-        print(json.dumps(statusline_snippet(cmd), indent=2))
-        print(
-            f"# merge into {os.path.join(project_dir, SETTINGS_FILES[0])}"
-            + (
-                f"; replaces the status line set in {path}, and still runs it"
-                if cmd and "progress.py" not in cmd
-                else "; already set up"
-                if cmd
-                else ""
-            ),
-            file=sys.stderr,
-        )
-        return 0
+        return print_config(args.user)
     if not sys.stdin.isatty():
         sys.stdin.read()  # Claude Code sends session JSON; the bars don't depend on it
     d = progress_dir()
