@@ -6,28 +6,31 @@ import argparse
 import json
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .core import FINAL_PHASES
-from .store import ensure_dirs, progress_dir
+from .store import progress_dir
 
 # progress the status-line bar already shows; passing these on only wakes the agent to repeat it
 ROUTINE_KINDS = ("milestone", "stage", "started", "recovered")
 
 
-def wanted(e: Dict[str, Any], run: Optional[str], all_kinds: bool) -> bool:
+def wanted(e: dict[str, Any], run: str | None, all_kinds: bool) -> bool:
     if run and e.get("run") != run:
         return False
     return all_kinds or e.get("kind") not in ROUTINE_KINDS
 
 
 def cmd_events(args: argparse.Namespace) -> int:
-    d = progress_dir()
-    ensure_dirs(d)
-    path = d / "events.jsonl"
-    path.touch()
+    # read-only, so it runs inside an agent sandbox that can't write the state folder; the poller
+    # (run outside the sandbox) creates the file
+    path = progress_dir() / "events.jsonl"
+    existed = path.exists()
+    while not path.exists():
+        time.sleep(0.5)
     with open(path) as f:
-        if not args.from_start:
+        # a file that appeared after this Monitor started holds only new events
+        if existed and not args.from_start:
             # hints are for the agent: pass on ones written before this Monitor started
             for line in f:
                 try:

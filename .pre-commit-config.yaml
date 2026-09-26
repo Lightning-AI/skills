@@ -1,0 +1,36 @@
+# Local checks before each commit; CI runs the same hooks, one required check each.
+#   uvx pre-commit install        # once per clone
+#   uvx pre-commit run --all-files
+# Settings for each tool live in pyproject.toml.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.414
+    hooks:
+      - id: pyright
+        # the bundled Node.js spares contributors a separate install; the SDK lets pyright check
+        # the poller's calls into it
+        additional_dependencies: ["pyright[nodejs]", lightning-sdk]
+
+  - repo: https://github.com/jsh9/pydoclint
+    rev: 0.9.1
+    hooks:
+      - id: pydoclint
+        args: [--config=pyproject.toml]
+
+  - repo: local
+    hooks:
+      - id: import-linter
+        name: import-linter
+        language: python
+        additional_dependencies: [import-linter==2.15]
+        # job_progress is imported from its skill's folder, not installed
+        entry: env PYTHONPATH=lightning-jobs lint-imports
+        pass_filenames: false
+        files: ^lightning-jobs/.*\.py$|^pyproject\.toml$

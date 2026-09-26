@@ -15,11 +15,20 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from .core import ENTRY_SCRIPT, FINAL_PHASES, STUDIO_HOME, fmt_duration, make_event, pct
+from .core import ATTEMPT_FAILED, ENTRY_SCRIPT, FINAL_PHASES, STUDIO_HOME, fmt_duration, make_event, pct
 from .settings import statusline_hint
-from .store import append_events, ensure_dirs, pid_alive, progress_dir, read_json, session_dir, write_json
+from .store import (
+    append_events,
+    ensure_dirs,
+    install_launcher,
+    pid_alive,
+    progress_dir,
+    read_json,
+    session_dir,
+    write_json,
+)
 from .tracker import (
     EXIT_RE,
     LogTail,
@@ -40,7 +49,7 @@ STUDIO_READ_LIMIT = 4_000_000
 COST_INTERVAL = 30.0
 
 
-def cli_python() -> Optional[str]:
+def cli_python() -> str | None:
     """The interpreter named on the `lightning` CLI script's first line, e.g. its uv tool env."""
     cli = shutil.which("lightning")
     if not cli:
@@ -88,11 +97,11 @@ def ensure_sdk() -> None:
 class Follower(threading.Thread):
     """Consumes one job's log stream into the shared state until the stream ends."""
 
-    def __init__(self, name: str, teamspace: Optional[str], query: Optional[str], sink) -> None:
+    def __init__(self, name: str, teamspace: str | None, query: str | None, sink) -> None:
         super().__init__(daemon=True)
         self.name_, self.teamspace, self.query, self.sink = name, teamspace, query, sink
         self.abandoned = False
-        self.error: Optional[str] = None
+        self.error: str | None = None
 
     def run(self) -> None:
         from lightning_sdk import Job
@@ -107,14 +116,14 @@ class Follower(threading.Thread):
             self.error = f"{type(ex).__name__}: {ex}"
 
 
-def preflight(job: Optional[str], studio: Optional[str], teamspace: Optional[str]) -> None:
+def preflight(job: str | None, studio: str | None, teamspace: str | None) -> None:
     """Fail fast, with the fix, when the control plane is unreachable (the agent-sandbox case)."""
     from lightning_sdk import Job, Studio
 
     try:
         if studio:
             Studio(studio, teamspace=teamspace, create_ok=False)  # never create a Studio by accident
-        else:
+        elif job:
             Job(job, teamspace=teamspace)
     except Exception as ex:
         text = f"{type(ex).__name__}: {ex}"
@@ -134,6 +143,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     preflight(args.job, args.studio, args.teamspace)
     d = progress_dir()
     ensure_dirs(d)
+    install_launcher(d)  # keeps a registered status line on this, the newest, copy of the script
     if args.studio:
         name = f"{args.studio}:{args.log}"
         entry = {"kind": "studio", "name": name, "studio": args.studio, "log": args.log}
@@ -151,8 +161,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     if pid_alive(runfile.get("pid")) and runfile.get("pid") != os.getpid():
         write_json(run_path, runfile)
-        append_events(d, [make_event("relaunch", run, f"continuing with {name}"
-                                 + (f" · {args.note}" if args.note else ""), time.time())])
+        append_events(
+            d,
+            [
+                make_event(
+                    "relaunch", run, f"continuing with {name}" + (f" · {args.note}" if args.note else ""), time.time()
+                )
+            ],
+        )
         print(f"handed {name} to the running poller for {run} (pid {runfile['pid']})")
         return 0
     runfile["pid"] = os.getpid()
@@ -168,7 +184,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         state["finished_at"] = None
     lock = threading.Lock()
 
-    def save(events: List[Dict[str, Any]]) -> None:
+    def save(events: list[dict[str, Any]]) -> None:
         state["updated_at"] = time.time()
         write_json(state_path, state)
         append_events(d, events)
@@ -222,9 +238,18 @@ def cmd_watch(args: argparse.Namespace) -> int:
             state["phase"] = "waiting"
             state["issue_since"] = state["issue_since"] or state["last_sample_at"] or time.time()
             cause = recent_cause(state, None)
-            save([make_event("failed", run, f"{entry['name']} failed at {pct(state['step'], state['total']) or 0}%"
-                         + (f" · {cause}" if cause else "")
-                         + f" · waiting {fmt_duration(args.relaunch_wait)} for a relaunch", time.time())])
+            save(
+                [
+                    make_event(
+                        ATTEMPT_FAILED,
+                        run,
+                        f"{entry['name']} failed at {pct(state['step'], state['total']) or 0}%"
+                        + (f" · {cause}" if cause else "")
+                        + f" · waiting {fmt_duration(args.relaunch_wait)} for a relaunch",
+                        time.time(),
+                    )
+                ]
+            )
         deadline = time.time() + args.relaunch_wait
         outcome = "timeout"
         while time.time() < deadline:
@@ -257,7 +282,7 @@ def supervise(entry, state, lock, save, sink, run_path, idx, args) -> str:
     from lightning_sdk import Job
 
     job = Job(entry["name"], teamspace=entry.get("teamspace") or args.teamspace)
-    follower: Optional[Follower] = None
+    follower: Follower | None = None
     last_cost, terminal_since, failures = 0.0, None, 0
     while True:
         now = time.time()
@@ -325,11 +350,11 @@ def studio_read_command(path: str, offset: int) -> str:
     )
 
 
-def parse_studio_read(out: str) -> Optional[Tuple[int, bool, bytes]]:
+def parse_studio_read(out: str) -> tuple[int, bool, bytes] | None:
     m = re.search(r"^SIZE (\d+) WRITER ([01])$", out, re.M)
     if not m:
         return None
-    b64 = out[m.end():].strip()
+    b64 = out[m.end() :].strip()
     return int(m.group(1)), m.group(2) == "1", base64.b64decode(b64) if b64 else b""
 
 
@@ -339,9 +364,9 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
 
     studio = Studio(entry["studio"], teamspace=entry.get("teamspace") or args.teamspace, create_ok=False)
     tail, offset, first, failures = LogTail(), 0, True, 0
-    recent: List[str] = []  # last lines, to judge an exit that printed no PROGRESS_EXIT
-    exited_at: Optional[float] = None  # set once the process is gone; cleared by a relaunch
-    down_since: Optional[float] = None
+    recent: list[str] = []  # last lines, to judge an exit that printed no PROGRESS_EXIT
+    exited_at: float | None = None  # set once the process is gone; cleared by a relaunch
+    down_since: float | None = None
     name = entry["name"]
 
     def new_attempt(now: float, why: str) -> None:
@@ -414,9 +439,19 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
                     state["phase"] = "waiting"
                     state["issue_since"] = state["issue_since"] or state["last_sample_at"] or now
                     cause = recent_cause(state, None)
-                    save([make_event("failed", state["run"], f"{name} exited ({exit_code}) at "
-                                 f"{pct(state['step'], state['total']) or 0}%" + (f" · {cause}" if cause else "")
-                                 + f" · waiting {fmt_duration(args.relaunch_wait)} for a relaunch", now)])
+                    save(
+                        [
+                            make_event(
+                                ATTEMPT_FAILED,
+                                state["run"],
+                                f"{name} exited ({exit_code}) at "
+                                f"{pct(state['step'], state['total']) or 0}%"
+                                + (f" · {cause}" if cause else "")
+                                + f" · waiting {fmt_duration(args.relaunch_wait)} for a relaunch",
+                                now,
+                            )
+                        ]
+                    )
 
         runfile = read_json(run_path) or {}
         if len(runfile.get("jobs", [])) > idx + 1:

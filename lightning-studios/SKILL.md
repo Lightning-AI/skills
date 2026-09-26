@@ -187,7 +187,9 @@ out, code = studio.run_and_detach(
 
 For live progress, an ETA and setback tracking on a run like this, don't hand-roll a polling
 loop. Use the `lightning-jobs` skill's `progress.py` (its *Live progress, ETA and setbacks*
-section), pointing it at the Studio and the log. Paths are relative to the Studio's home:
+section), pointing it at the Studio and the log. `<LIGHTNING_JOBS_SKILL_DIR>` is the
+`lightning-jobs` folder next to this skill's own base directory. Paths are relative to the
+Studio's home:
 
 ```bash
 python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace

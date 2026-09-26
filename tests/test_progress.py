@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s tests
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -13,6 +14,8 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import ClassVar, Optional, TypeVar
+from unittest import mock
 
 JOBS_DIR = Path(__file__).resolve().parent.parent / "lightning-jobs"
 ENTRY = JOBS_DIR / "progress.py"
@@ -26,6 +29,15 @@ T0 = 1_800_000_000.0
 
 def ts(t: float) -> str:
     return datetime.fromtimestamp(t, tz=timezone.utc).isoformat()
+
+
+T = TypeVar("T")
+
+
+def must(value: Optional[T]) -> T:
+    """Fail the test on None, and tell the type checker the value is set from here on."""
+    assert value is not None
+    return value
 
 
 class Run:
@@ -48,21 +60,21 @@ class Run:
 
 class Parsing(unittest.TestCase):
     def test_progress_line(self):
-        r = tracker.parse_progress("PROGRESS 450/1000 attempt=2 loss=0.3")
+        r = must(tracker.parse_progress("PROGRESS 450/1000 attempt=2 loss=0.3"))
         self.assertEqual((r["step"], r["total"], r["attempt"], r["source"]), (450, 1000, 2, "progress"))
 
     def test_tqdm_last_redraw_wins(self):
         line = " 10%|█         | 100/1000 [00:10<01:30]\r 45%|████▌     | 450/1000 [00:45<00:55, 10it/s]"
-        r = tracker.parse_progress(line)
+        r = must(tracker.parse_progress(line))
         self.assertEqual((r["step"], r["total"], r["source"]), (450, 1000, "tqdm"))
 
     def test_tqdm_epoch_and_validation(self):
-        self.assertEqual(tracker.parse_progress("Epoch 3:  40%|████      | 40/100 [00:04<00:06]")["epoch"], 3)
+        self.assertEqual(must(tracker.parse_progress("Epoch 3:  40%|████      | 40/100 [00:04<00:06]"))["epoch"], 3)
         self.assertIsNone(tracker.parse_progress("Validation DataLoader 0:  50%|█████     | 5/10 [00:01<00:01]"))
 
     def test_error_lines(self):
         self.assertIsNone(tracker.parse_error("Traceback (most recent call last):"))
-        self.assertIn("OutOfMemoryError", tracker.parse_error("torch.OutOfMemoryError: CUDA out of memory."))
+        self.assertIn("OutOfMemoryError", must(tracker.parse_error("torch.OutOfMemoryError: CUDA out of memory.")))
         self.assertIsNone(tracker.parse_error("step 10 loss 0.4"))
 
     def test_bar(self):
@@ -79,8 +91,10 @@ class Progress(unittest.TestCase):
         self.assertEqual(r.s["phase"], "running")
         self.assertAlmostEqual(r.s["rate"], 1.0)
         self.assertAlmostEqual(r.s["eta_s"], 410.0)
-        self.assertEqual([e["msg"].split(" · ")[0] for e in r.events if e["kind"] == "milestone"],
-                         [f"train-42: {p}%" for p in (10, 20, 30, 40, 50)])
+        self.assertEqual(
+            [e["msg"].split(" · ")[0] for e in r.events if e["kind"] == "milestone"],
+            [f"train-42: {p}%" for p in (10, 20, 30, 40, 50)],
+        )
 
     def test_reconnect_replay_is_ignored(self):
         r = Run()
@@ -196,8 +210,10 @@ class LiveRunFindings(unittest.TestCase):
     """Problems seen in the first live run (Qwen3.5-4B SFT job)."""
 
     def test_allocator_warning_is_not_an_error(self):
-        warn = ("[W924 14:51:32.327618612 CUDACachingAllocator.cpp:3933] memory allocation failed "
-                "with OOM on device 0 while trying to allocate")
+        warn = (
+            "[W924 14:51:32.327618612 CUDACachingAllocator.cpp:3933] memory allocation failed "
+            "with OOM on device 0 while trying to allocate"
+        )
         self.assertIsNone(tracker.parse_error(warn))
         self.assertIsNone(tracker.parse_error("UserWarning: out of memory fallback in use"))
         self.assertIsNotNone(tracker.parse_error("torch.OutOfMemoryError: CUDA out of memory."))
@@ -237,7 +253,7 @@ class LiveRunFindings(unittest.TestCase):
         r.line(T0 + 1, "PROGRESS_PHASE setup 1/4")
         r.line(T0 + 60, "PROGRESS_PHASE train 2/4")
         r.line(T0 + 61, "PROGRESS 5/10")
-        self.assertIn("[train]", statusline.render_line(r.s, T0 + 62))   # the stage's own bar wins
+        self.assertIn("[train]", statusline.render_line(r.s, T0 + 62))  # the stage's own bar wins
         r.line(T0 + 600, "PROGRESS_PHASE eval_ft 4/4")
         line = statusline.render_line(r.s, T0 + 700)
         self.assertIn("▓" * 15 + "░" * 5 + "  stage 4/4", line)
@@ -249,10 +265,10 @@ class LiveRunFindings(unittest.TestCase):
         for i in range(6):
             r.line(T0 + 10 * i, f"PROGRESS {10 * i}/100")
         r.line(T0 + 60, "RuntimeError: NCCL timeout")
-        tracker.end_attempt(r.s, T0 + 70)          # crashed in train
+        tracker.end_attempt(r.s, T0 + 70)  # crashed in train
         r.line(T0 + 100, "PROGRESS_PHASE setup")  # relaunched attempt starts over
         r.line(T0 + 150, "PROGRESS_PHASE train")
-        r.line(T0 + 160, "PROGRESS 30/100")      # resumed from a checkpoint
+        r.line(T0 + 160, "PROGRESS 30/100")  # resumed from a checkpoint
         self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
         self.assertIn("NCCL timeout", r.s["setbacks"][-1]["cause"])  # the old attempt's error explains it
         self.assertEqual(r.s["peak"], 50)
@@ -269,13 +285,13 @@ class LiveRunFindings(unittest.TestCase):
             r.line(T0 + 1000 * attempt + 5, "ValueError: bad checkpoint")
             tracker.end_attempt(r.s, T0 + 1000 * attempt + 10)  # each attempt crashed in eval
         r.line(T0 + 3001, "PROGRESS_PHASE train")
-        r.line(T0 + 3002, "PROGRESS 100/100")    # train starts fresh: it never broke
+        r.line(T0 + 3002, "PROGRESS 100/100")  # train starts fresh: it never broke
         r.line(T0 + 3003, "PROGRESS_PHASE eval")
-        r.line(T0 + 3004, "PROGRESS 0/1319")     # eval broke last time: this one is compared
+        r.line(T0 + 3004, "PROGRESS 0/1319")  # eval broke last time: this one is compared
         # only the last eval lost ground (13 → 0); train never broke, so it never counts
         self.assertEqual([(b["kind"], b["from"], b["to"]) for b in r.s["setbacks"]], [("restart", 13, 0)])
         r.tick("Running", T0 + 3005)
-        self.assertIsNone(r.s["last_error"])     # attempt 5 isn't blamed for the old crash
+        self.assertIsNone(r.s["last_error"])  # attempt 5 isn't blamed for the old crash
 
     def test_rows_show_each_stage_of_the_current_attempt(self):
         r = Run()
@@ -289,12 +305,36 @@ class LiveRunFindings(unittest.TestCase):
         rows = statusline.render_rows(r.s, T0 + 460)
         self.assertEqual(len(rows), 4)
         self.assertIn("stage 3/3", rows[0])
-        self.assertIn(" 70%", rows[0])            # 2 stages done + ~11% of eval, over 3
+        self.assertIn(" 70%", rows[0])  # 2 stages done + ~11% of eval, over 3
         self.assertTrue(rows[1].startswith("   ✔ setup"))
         self.assertTrue(rows[2].startswith("   ✔ train"))
         self.assertIn("▸ eval ", rows[3])
         self.assertIn("ETA", rows[3])
         self.assertEqual(len(statusline.render_rows(r.s, T0 + 460, expand=False)), 1)
+
+    def test_a_stage_with_no_reading_yet_says_so(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE setup 1/2")
+        r.line(T0 + 60, "PROGRESS_PHASE train 2/2")  # model loading: no PROGRESS line yet
+        self.assertIn("▸ train  no progress reported yet · 2m00s", statusline.render_rows(r.s, T0 + 180)[2])
+
+    def test_a_new_tqdm_bar_in_the_same_attempt_is_not_a_setback(self):
+        r = Run()
+        r.line(T0 + 1, "PROGRESS_PHASE eval")
+        for shots in range(2):  # lm-eval: one bar for 0-shot, then a new one for 5-shot
+            for i in range(0, 1320, 330):
+                r.line(T0 + 100 * shots + i / 10, f"Processed prompts: {i * 100 // 1319}%|█| {i}/1319")
+        self.assertEqual(r.s["setbacks"], [])
+        self.assertNotIn("setback", r.kinds())
+        self.assertEqual(r.s["peak"], r.s["step"])  # no ▒ left over from the first bar
+
+    def test_a_tqdm_drop_after_a_relaunch_is_a_setback(self):
+        r = Run()
+        for i in range(0, 60, 10):
+            r.line(T0 + i, f"{i}%|█| {i}/100")
+        tracker.end_attempt(r.s, T0 + 70)  # the job failed and was relaunched
+        r.line(T0 + 200, " 30%|█| 30/100")
+        self.assertEqual(r.s["setbacks"][-1]["kind"], "resume")
 
     def test_rows_hide_earlier_attempts(self):
         r = Run()
@@ -307,29 +347,91 @@ class LiveRunFindings(unittest.TestCase):
 
     def test_statusline_hint_and_config(self):
         proj = tempfile.mkdtemp()
-        old_home = os.environ.get("HOME")
-        os.environ["HOME"] = proj  # no user settings either
-        try:
-            self.assertIn("not set up", settings.statusline_hint("r", proj))
+        with mock.patch.dict(os.environ, HOME=proj):  # no user settings either
+            self.assertIn("not set up", must(settings.statusline_hint("r", proj)))
             os.makedirs(os.path.join(proj, ".claude"))
             with open(os.path.join(proj, ".claude", "settings.json"), "w") as f:
                 f.write('{"statusLine": {"type": "command", "command": "my-line.sh"}}')
-            self.assertIn("keeps their current status line", settings.statusline_hint("r", proj))
+            self.assertIn("keeps their current status line", must(settings.statusline_hint("r", proj)))
             cmd = settings.statusline_snippet("my-line.sh")["statusLine"]["command"]
             self.assertIn("my-line.sh", cmd)
-            self.assertIn("progress.py", cmd)
+            self.assertIn(store.LAUNCHER, cmd)
             with open(os.path.join(proj, ".claude", "settings.local.json"), "w") as f:
                 f.write('{"statusLine": {"command": "python3 /x/progress.py statusline"}}')
-            self.assertIsNone(settings.statusline_hint("r", proj))
-        finally:
-            os.environ["HOME"] = old_home
+            self.assertIsNone(settings.statusline_hint("r", proj))  # set up before the launcher existed
 
     def test_chained_statusline_runs_both(self):
-        cmd = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
-        env = dict(os.environ, LIGHTNING_PROGRESS_DIR=tempfile.mkdtemp())
-        out = subprocess.run(["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}',
-                             capture_output=True, text=True, env=env).stdout
+        d = Path(tempfile.mkdtemp())
+        store.install_launcher(d)
+        with mock.patch.dict(os.environ, LIGHTNING_PROGRESS_DIR=str(d)):
+            cmd = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
+        out = subprocess.run(
+            ["sh", "-c", cmd], input='{"workspace":{"project_dir":"/x"}}', capture_output=True, text=True
+        ).stdout
         self.assertEqual(out.strip(), "theirs")  # no runs yet, so ours prints nothing
+
+    def test_the_launcher_finds_the_state_without_the_session_environment(self):
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        store.install_launcher(d)
+        s = tracker.new_state("r1")
+        s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
+        store.write_json(d / "state" / "r1.json", s)
+        with mock.patch.dict(os.environ, LIGHTNING_PROGRESS_DIR=str(d)):
+            cmd = settings.statusline_snippet(None)["statusLine"]["command"]
+        env = {k: v for k, v in os.environ.items() if k != "LIGHTNING_PROGRESS_DIR"}
+        out = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env).stdout
+        self.assertIn("r1", out)
+
+    def test_the_launcher_stays_quiet_when_the_plugin_version_is_gone(self):
+        d = Path(tempfile.mkdtemp())
+        launcher = store.install_launcher(d)
+        (d / store.ENTRY_FILE).write_text("/plugins/cache/lightning/1.0.0/lightning-jobs/progress.py\n")
+        out = subprocess.run([sys.executable, str(launcher)], input="{}", capture_output=True, text=True)
+        self.assertEqual((out.returncode, out.stdout, out.stderr), (0, "", ""))
+
+    def test_user_config_targets_user_settings_and_warns_about_project_overrides(self):
+        home, proj, d = (Path(tempfile.mkdtemp()) for _ in range(3))
+        (proj / ".claude").mkdir()
+        (proj / ".claude" / "settings.json").write_text('{"statusLine": {"command": "their-line.sh"}}')
+        env = dict(os.environ, HOME=str(home), CLAUDE_PROJECT_DIR=str(proj))
+        out = subprocess.run(
+            [sys.executable, str(ENTRY), "--dir", str(d), "statusline", "--config", "--user"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        cmd = json.loads(out.stdout)["statusLine"]["command"]
+        self.assertIn(store.LAUNCHER, cmd)
+        self.assertNotIn("their-line.sh", cmd)  # a project's own line isn't chained into the user's
+        self.assertIn(str(home / ".claude" / "settings.json"), out.stderr)
+        self.assertIn("hides this one in that project", out.stderr)
+        self.assertTrue((d / store.LAUNCHER).exists())
+
+    def test_events_only_read_and_outlive_a_failed_attempt(self):
+        d = Path(tempfile.mkdtemp()) / "not-yet"  # a sandboxed Monitor can't create this
+        proc = subprocess.Popen(
+            [sys.executable, str(ENTRY), "--dir", str(d), "events", "--run", "r"],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            time.sleep(1)
+            self.assertIsNone(proc.poll())  # waiting for the poller, not crashed
+            self.assertFalse(d.exists())  # and it wrote nothing
+            store.ensure_dirs(d)
+            store.append_events(
+                d,
+                [
+                    core.make_event("hint", "r", "status-line bar is not set up", T0),
+                    core.make_event(core.ATTEMPT_FAILED, "r", "attempt 1 failed", T0),
+                    core.make_event("done", "r", "done in 5m", T0),
+                ],
+            )
+            out, _ = proc.communicate(timeout=10)
+        finally:
+            proc.kill()
+        self.assertEqual(out.splitlines(), ["r: status-line bar is not set up", "r: attempt 1 failed", "r: done in 5m"])
 
     def test_events_pass_on_only_what_needs_a_reply(self):
         r = Run()
@@ -368,8 +470,14 @@ class Locations(unittest.TestCase):
         s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
         store.write_json(Path(d) / "state" / "r1.json", s)
         script = str(ENTRY)
-        out = subprocess.run([sys.executable, script, "statusline"], cwd=tempfile.mkdtemp(), env=env,
-                             input='{"workspace":{"project_dir":"/elsewhere"}}', capture_output=True, text=True)
+        out = subprocess.run(
+            [sys.executable, script, "statusline"],
+            cwd=tempfile.mkdtemp(),
+            env=env,
+            input='{"workspace":{"project_dir":"/elsewhere"}}',
+            capture_output=True,
+            text=True,
+        )
         self.assertIn("r1", out.stdout)
 
     def test_orphaned_run_is_flagged_then_dropped(self):
@@ -378,16 +486,16 @@ class Locations(unittest.TestCase):
         s = tracker.new_state("r1")
         s.update(phase="pending", pending_since=T0, updated_at=T0)
         store.write_json(d / "runs" / "r1.json", {"run": "r1", "pid": None})
-        self.assertTrue(statusline.shown(d, s, T0 + 120))     # stale, still on screen
-        self.assertFalse(statusline.shown(d, s, T0 + 3600))   # poller long dead: dropped
+        self.assertTrue(statusline.shown(d, s, T0 + 120))  # stale, still on screen
+        self.assertFalse(statusline.shown(d, s, T0 + 3600))  # poller long dead: dropped
         store.write_json(d / "runs" / "r1.json", {"run": "r1", "pid": os.getpid()})
-        self.assertTrue(statusline.shown(d, s, T0 + 3600))    # a live poller keeps it
+        self.assertTrue(statusline.shown(d, s, T0 + 3600))  # a live poller keeps it
 
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
         r.line(T0 + 1, "PROGRESS_PHASE setup")
-        tracker.end_attempt(r.s, T0 + 100)          # attempt 1 ended during setup
-        r.line(T0 + 200, "PROGRESS_PHASE setup")      # attempt 2 prints the same stage again
+        tracker.end_attempt(r.s, T0 + 100)  # attempt 1 ended during setup
+        r.line(T0 + 200, "PROGRESS_PHASE setup")  # attempt 2 prints the same stage again
         self.assertEqual(r.s["stage_since"], T0 + 200)
         self.assertIn("stage setup again", r.events[-1]["msg"])
 
@@ -399,7 +507,7 @@ class ScriptDone(BaseException):
 class FakeStudio:
     """Stands in for lightning_sdk.Studio: runs the read command in a local bash, one scripted step per poll."""
 
-    steps: list = []
+    steps: ClassVar[list] = []
     writer = True
 
     def __init__(self, name, teamspace=None, create_ok=True):
@@ -417,7 +525,9 @@ class FakeStudio:
 
 class StudioMode(unittest.TestCase):
     def setUp(self):
-        sys.modules["lightning_sdk"] = types.SimpleNamespace(Studio=FakeStudio)
+        fake_sdk = types.ModuleType("lightning_sdk")
+        fake_sdk.__dict__["Studio"] = FakeStudio
+        sys.modules["lightning_sdk"] = fake_sdk
         watch.STUDIO_INTERVAL = 0
         self.dir = tempfile.mkdtemp()
         self.log = os.path.join(self.dir, "train.log")
@@ -430,6 +540,7 @@ class StudioMode(unittest.TestCase):
             with open(self.log, mode) as f:
                 f.write(text)
             FakeStudio.writer = writer
+
         return step
 
     def run_studio(self, steps):
@@ -442,49 +553,59 @@ class StudioMode(unittest.TestCase):
         entry = {"kind": "studio", "name": f"s:{self.log}", "studio": "s", "log": self.log}
         args = types.SimpleNamespace(teamspace=None, relaunch_wait=1800.0)
         try:
-            outcome = watch.supervise_studio(entry, state, threading.Lock(), save,
-                                                Path(self.dir) / "none.json", 0, args)
+            outcome = watch.supervise_studio(
+                entry, state, threading.Lock(), save, Path(self.dir) / "none.json", 0, args
+            )
         except ScriptDone:
             outcome = None
         return outcome, state, events
 
     def test_crash_relaunch_into_same_log_then_finish(self):
-        outcome, state, events = self.run_studio([
-            self.write("loading\n"),
-            self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 41, 10))),
-            self.write("Traceback (most recent call last):\nModuleNotFoundError: No module named 'soundfile'\n",
-                       writer=False),                                   # crashed, no PROGRESS_EXIT line
-            lambda: None,                                               # waiting for a relaunch
-            self.write("PROGRESS 0/100\n", mode="w"),                   # agent relaunched into the same log
-            self.write("PROGRESS 10/100\n 20%|██   | 20/100"),           # tqdm-style partial line
-            self.write("\nPROGRESS 100/100\nPROGRESS_EXIT 0\n", writer=False),
-        ])
+        outcome, state, events = self.run_studio(
+            [
+                self.write("loading\n"),
+                self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 41, 10))),
+                self.write(
+                    "Traceback (most recent call last):\nModuleNotFoundError: No module named 'soundfile'\n",
+                    writer=False,
+                ),  # crashed, no PROGRESS_EXIT line
+                lambda: None,  # waiting for a relaunch
+                self.write("PROGRESS 0/100\n", mode="w"),  # agent relaunched into the same log
+                self.write("PROGRESS 10/100\n 20%|██   | 20/100"),  # tqdm-style partial line
+                self.write("\nPROGRESS 100/100\nPROGRESS_EXIT 0\n", writer=False),
+            ]
+        )
         kinds = [e["kind"] for e in events]
         self.assertEqual(outcome, "Completed")
-        self.assertIn("failed", kinds)
-        failed = next(e for e in events if e["kind"] == "failed")
+        self.assertIn(core.ATTEMPT_FAILED, kinds)
+        self.assertNotIn("failed", kinds)  # the final kind, which would end a Monitor
+        failed = next(e for e in events if e["kind"] == core.ATTEMPT_FAILED)
         self.assertIn("soundfile", failed["msg"])
         self.assertIn("relaunch", kinds)
         self.assertEqual(state["setbacks"][-1]["kind"], "restart")
         self.assertEqual(state["step"], 100)
 
     def test_attaching_mid_run_replays_no_old_milestones(self):
-        _, state, events = self.run_studio([
-            self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 51, 5))),  # history at attach time
-            self.write("PROGRESS 60/100\n"),
-        ])
+        _, state, events = self.run_studio(
+            [
+                self.write("".join(f"PROGRESS {i}/100\n" for i in range(0, 51, 5))),  # history at attach time
+                self.write("PROGRESS 60/100\n"),
+            ]
+        )
         self.assertEqual([e["msg"].split(" · ")[0] for e in events if e["kind"] == "milestone"], ["train: 60%"])
         self.assertEqual(state["step"], 60)
 
     def test_nonzero_exit_line_waits_then_resume_by_appending(self):
-        outcome, state, events = self.run_studio([
-            self.write("PROGRESS 50/100\nPROGRESS_EXIT 137\n", writer=False),
-            lambda: None,
-            self.write("PROGRESS 45/100\n"),                           # appended by a resumed run
-            self.write("PROGRESS 60/100\nPROGRESS_EXIT 0\n", writer=False),
-        ])
+        outcome, state, events = self.run_studio(
+            [
+                self.write("PROGRESS 50/100\nPROGRESS_EXIT 137\n", writer=False),
+                lambda: None,
+                self.write("PROGRESS 45/100\n"),  # appended by a resumed run
+                self.write("PROGRESS 60/100\nPROGRESS_EXIT 0\n", writer=False),
+            ]
+        )
         self.assertEqual(outcome, "Completed")
-        self.assertIn("exited (137)", next(e["msg"] for e in events if e["kind"] == "failed"))
+        self.assertIn("exited (137)", next(e["msg"] for e in events if e["kind"] == core.ATTEMPT_FAILED))
         self.assertEqual(state["setbacks"][-1]["kind"], "resume")
 
     def test_missing_log_is_pending(self):
