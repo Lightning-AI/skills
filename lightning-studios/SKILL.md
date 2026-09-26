@@ -217,17 +217,49 @@ Prompts this skill handles: *"spin up a GPU studio and run my training script"*,
 
 **Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
 can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
-or never return. So start in the background and poll for readiness with a deadline (see Gotchas):
+or never return. So start in the background and poll for readiness with a deadline (see Gotchas).
+The `lightning-jobs` skill reuses the three helpers below:
 
 ```python
 import threading, time
 from lightning_sdk import Machine, Studio, Teamspace
+
+def run_if_up(studio, cmd):
+    """(output, exit code), or ("", -1) while the Studio isn't Running (starting, between machines)."""
+    try:
+        return studio.run_with_exit_code(cmd)
+    except RuntimeError:
+        return "", -1
+
+def wait_ready(studio, minutes=10, failed=()):
+    deadline = time.time() + minutes * 60
+    while time.time() < deadline and not failed:
+        out, code = run_if_up(studio, "python -c pass")        # not `true`: see Gotchas
+        if code == 0 and "setting things up" not in out:
+            return
+        time.sleep(10)
+    raise failed[0] if failed else TimeoutError(f"{studio.name} never finished setup: use a new Studio")
+
+def start_ready(studio, machine, minutes=10):
+    """Start on `machine` in the background and return once it can run commands."""
+    if str(studio.status).endswith("Running") and studio.machine != machine:
+        raise RuntimeError(f"{studio.name} is already running on {studio.machine}: stop it or use a new name")
+    failed = []                                                # start() errors surface here, not in the thread
+    def _start():
+        try:
+            studio.start(machine=machine)
+        except Exception as e:
+            failed.append(e)
+    threading.Thread(target=_start, daemon=True).start()
+    wait_ready(studio, minutes, failed)
 
 ts = Teamspace("my-org/my-teamspace")
 # the fastest, then cheapest, 1x H200 across the teamspace's cloud accounts (see *Machine types*)
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
         for m in ts.list_machines(cloud_account=a.cluster_id)
         if m.family == "H200" and m.accelerator_count == 1]
+if not rows:
+    raise SystemExit("no account here sells a 1x H200: ask the user for another GPU or teamspace")
 wait, cost, acct, gpu = min(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0))
 print(acct, gpu.name, f"${cost}/h", f"wait ~{wait}s")        # confirm with the user before the GPU starts
 
@@ -235,48 +267,37 @@ studio = Studio("exp-1", teamspace=ts, cloud=acct, create_ok=True)
 # an existing Studio of that name is reused as is, on whatever cloud it was created on
 assert studio.cloud_account == acct, f"{studio.name} is on {studio.cloud_account}: pick a new name"
 
-def wait_ready(minutes=10):
-    deadline = time.time() + minutes * 60
-    while time.time() < deadline:
-        if str(studio.status).endswith("Running"):
-            out, code = studio.run_with_exit_code("python -c pass")   # not `true`: see Gotchas
-            if code == 0 and "setting things up" not in out:
-                return
-        time.sleep(10)
-    studio.stop()   # stuck in setup: create a new Studio rather than starting this one again
-    raise TimeoutError(f"{studio.name} never finished setup")
-
-threading.Thread(target=studio.start, kwargs={"machine": Machine.CPU}, daemon=True).start()
-wait_ready()
-studio.upload_folder("./src", "src")                          # after ready, so it lands at once
-studio.run("cd ~/src && pip install -r requirements.txt")     # setup at CPU rates
-try:                                                          # any failure from here stops the GPU
+try:                                                          # any failure from here stops the Studio
+    start_ready(studio, Machine.CPU)
+    studio.upload_folder("./src", "src")                      # after ready, so it lands at once
+    studio.run("cd ~/src && pip install -r requirements.txt") # setup at CPU rates
     try:
         studio.switch_machine(gpu)                            # the row picked from this account's list
     except Exception as e:                                    # it can report this and switch anyway
         if "cannot switch to a Studio" not in str(e):
             raise
     for _ in range(30):                                       # so trust nvidia-smi, not the call
-        out, code = studio.run_with_exit_code("nvidia-smi --query-gpu=name --format=csv,noheader")
+        out, code = run_if_up(studio, "nvidia-smi --query-gpu=name --format=csv,noheader")
         gpus = out.splitlines() if code == 0 else []
         if gpus:
             break
         time.sleep(10)
     print(gpus)                                               # e.g. ['NVIDIA H200']
     assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another account"
-    wait_ready()                                              # a new machine: wait until it can run commands
+    wait_ready(studio)                                        # a new machine: wait until it can run commands
     # train.exit gets the exit code when training ends; clear the last run's before launching
     studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
     print(studio.run("tail -n 40 ~/src/train.log"))          # within the first minute: crashes show up in seconds
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
-    while studio.run_with_exit_code("test -f ~/src/train.exit")[1] != 0:
+    while run_if_up(studio, "test -f ~/src/train.exit")[1] != 0:
         if time.time() > deadline:
             raise TimeoutError(studio.run("tail -n 40 ~/src/train.log"))
         print(studio.run("tail -n 1 ~/src/train.log"))        # progress line each poll
         time.sleep(60)
     assert studio.run("cat ~/src/train.exit") == "0", studio.run("tail -n 40 ~/src/train.log")
 except BaseException:
-    studio.stop()
+    if str(studio.status).endswith(("Running", "Pending")):
+        studio.stop()
     raise
 ```
 ```bash
@@ -285,9 +306,10 @@ lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
 For a short run where setup is light (a `uv` script that declares its own dependencies), skip
-the CPU phase: create the Studio on the row's account, start it with `machine=gpu`, `wait_ready()`,
-`studio.upload_file("train.py", "train.py")`, then
-`studio.run("cd ~ && env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py")` (see Gotchas).
+the CPU phase but keep the `try` block and its deadline: `start_ready(studio, gpu)`, then
+`studio.upload_file("train.py", "src/train.py")`, drop the `pip`, switch and `nvidia-smi` steps,
+and detach `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py` in place of `python train.py`
+(see Gotchas).
 
 **SSH in and run scripts interactively** (for a human user; agents should prefer `studio.run*` above since `ssh` opens an interactive shell):
 

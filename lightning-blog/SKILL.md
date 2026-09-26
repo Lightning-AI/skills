@@ -18,8 +18,8 @@ Creating a blog post creates its lit page. The public URL is `https://lightning.
 
 1. **Never publish without explicit confirmation**, in that message, for that post. Work draft-first
    and share a review link instead.
-2. **Change the lit page only through `put_page` below**, which carries the current `path` and
-   `published` through unless you mean to change them.
+2. **Change the lit page only through `put_page` below**, which carries the current body, `path`
+   and `published` through unless you mean to change them.
 
 ## Setup & auth
 
@@ -96,16 +96,17 @@ The slug is derived from the title (lowercased, `[a-z0-9-]` only, a random suffi
 Every change to the lit page goes through one helper:
 
 ```bash
-# put_page [path] [true|false] — full-replace PUT of the lit page, body from /tmp/post.json.
-# An omitted argument keeps the page's current value, so an edit never renames or unpublishes it.
+# put_page [body.json] [path] [true|false] — full-replace PUT of the lit page.
+# An empty or omitted argument keeps the page's current value, so a rename or publish never
+# replaces the body, and an edit never renames or unpublishes the post.
 put_page() {
-  local cur
-  cur=$(lightning api "/v1/blog-posts/$POST_ID" | jq -ce '.litPage | {path, published}') || return 1
-  jq -c --argjson cur "$cur" --arg path "${1:-}" --arg pub "${2:-}" '
-    {content: tostring,
-     path: (if $path == "" then $cur.path else $path end),
-     published: (if $pub == "" then ($cur.published // false) else $pub == "true" end)}' \
-    /tmp/post.json > /tmp/body.json || return 1
+  lightning api "/v1/blog-posts/$POST_ID" | jq -ce '.litPage | {content, path, published}' \
+    > /tmp/cur.json || return 1
+  jq -c --slurpfile body "${1:-/dev/null}" --arg path "${2:-}" --arg pub "${3:-}" '
+    {content: (if $body == [] then .content else ($body[0] | tostring) end),
+     path: (if $path == "" then .path else $path end),
+     published: (if $pub == "" then (.published // false) else $pub == "true" end)}' \
+    /tmp/cur.json > /tmp/body.json || return 1
   lightning api "/v1/lit-pages/$PAGE_ID" -X PUT --input /tmp/body.json \
     -q '.LitPage | {path, published, bytes: (.content|length)}'   # capital L, unlike other responses
 }
@@ -113,8 +114,8 @@ put_page() {
 
 ### 2. Write or edit the body
 
-The body is EditorJS JSON (see *Content format*). Write it to `/tmp/post.json` and let `put_page`
-embed it; never hand-escape it:
+The body is EditorJS JSON (see *Content format*). Write it to a file and let `put_page` embed it;
+never hand-escape it:
 
 ```bash
 cat > /tmp/post.json <<'JSON'
@@ -130,10 +131,11 @@ cat > /tmp/post.json <<'JSON'
  {"type":"paragraph","data":{"text":"Try it in a <b>Lightning Sandbox</b> today."}}
 ]}
 JSON
-put_page
+put_page /tmp/post.json
 ```
 
-To edit a post you didn't write, pull its ids and body down first, then edit and `put_page`:
+To edit a post you didn't write, pull its ids and body down first, then edit it and
+`put_page /tmp/post.json`:
 
 ```bash
 P=$(lightning api /v1/blog-posts/<slug-or-id>)
@@ -153,7 +155,7 @@ lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "authorId=$AUTHOR"
 
 lightning api "/v1/blog-posts/$POST_ID" -X PUT -f 'publishedAt=2026-08-04T09:00:00Z'  # date readers see
 
-put_page sandbox-cold-starts-300ms      # rename the slug
+put_page "" sandbox-cold-starts-300ms   # rename the slug
 ```
 
 **Settle the slug before sharing.** Renaming leaves no redirect; the old path starts returning `500`.
@@ -184,14 +186,16 @@ Publish this to the public blog now? (it appears immediately on lightning.ai/blo
 Only then:
 
 ```bash
-lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "publishedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-put_page "" true
+# keep the date shown above; set it to now only if the post has none
+[ -n "$(lightning api "/v1/blog-posts/$POST_ID" | jq -r '.publishedAt // empty')" ] ||
+  lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "publishedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+put_page "" "" true
 SLUG=$(lightning api "/v1/blog-posts/$POST_ID" | jq -r .litPage.path)
 curl -s -o /dev/null -w 'anon GET: %{http_code}\n' "${LIGHTNING_CLOUD_URL:-https://lightning.ai}/v1/blog-posts/$SLUG"
 ```
 
 Publishing is immediate and indexable; a future `publishedAt` only changes the displayed date. To
-pull a post down, `put_page "" false`: that needs no confirmation, but republishing does.
+pull a post down, `put_page "" "" false`: that needs no confirmation, but republishing does.
 
 ## Content format: EditorJS blocks
 
@@ -298,7 +302,7 @@ lightning api "/v1/blog-posts/$POST_ID" -X PUT -f "imageUrl=$UPLOAD_URL"   # as 
 ```
 
 Or reference `UPLOAD_URL` in an `image` block. To fill the empty image blocks `md2blocks.py` left,
-upload in document order and patch them in the same order, then `put_page`:
+upload in document order and patch them in the same order, then `put_page /tmp/post.json`:
 
 ```bash
 # uploaded.txt: one "<name>\t<url>" line per figure, in document order
@@ -351,13 +355,13 @@ button.
 ## Example workflows
 
 - **"Turn this benchmark writeup into a blog post."** Check the admin flag → create the draft →
-  convert to blocks (or `md2blocks.py`) → `put_page` → upload the chart as `imageUrl` → share the
-  review link → **ask** before publishing.
+  convert to blocks (or `md2blocks.py`) → `put_page /tmp/post.json` → upload the chart as
+  `imageUrl` → share the review link → **ask** before publishing.
 - **"Post this Markdown file, it has charts in it."** As above, plus: fix and rasterize each figure
   the TODO list names, upload in document order, patch the image blocks, settle the slug with
-  `put_page <slug>`, and screenshot the draft before handing it back.
+  `put_page "" <slug>`, and screenshot the draft before handing it back.
 - **"Fix the slug and author on the July recap, then publish it."** Pull the ids and body → set
-  `authorId` → `put_page <new-slug>` → show the summary and **ask** → publish.
+  `authorId` → `put_page "" <new-slug>` → show the summary and **ask** → publish.
 
 ## Gotchas
 

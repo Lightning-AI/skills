@@ -313,43 +313,34 @@ can't return files on their own). Pick `ACCOUNT` and `MACHINE` from the live lis
 *Machines*, and confirm the price with the user first:
 
 ```python
-import threading, time
-from lightning_sdk import Job, Studio
+import time
+from lightning_sdk import Job, Machine, Studio
+# start_ready: from the lightning-studios skill (*Set up on CPU, switch to a GPU*), with its two helpers
 
 studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
 # an existing Studio of that name is reused as is, on whatever cloud it was created on
 assert studio.cloud_account == ACCOUNT, f"{studio.name} is on {studio.cloud_account}: pick a new name"
-failed = []                                                   # start() errors surface here, not in the thread
-def _start():
-    try:
-        studio.start()                                        # CPU is enough: it only holds the files
-    except Exception as e:
-        failed.append(e)
-threading.Thread(target=_start, daemon=True).start()
-# Running is not ready, and start() can block past readiness (lightning-studios skill, Gotchas)
-deadline = time.time() + 600
-while time.time() < deadline and not failed:
-    if str(studio.status).endswith("Running"):
-        out, code = studio.run_with_exit_code("python -c pass")
-        if code == 0 and "setting things up" not in out:
-            break
-    time.sleep(10)
-else:
-    studio.stop()   # stuck in setup: create a new Studio rather than starting this one again
-    raise failed[0] if failed else TimeoutError(f"{studio.name} never finished setup")
-studio.upload_file("train.py", "train.py")       # lands in the Studio home, the job's working dir
-job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
-              command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
-              max_run_attempts=1)
+try:                                                  # the Studio stops on any failure, and once the job starts
+    start_ready(studio, Machine.CPU)                  # CPU is enough: it only holds the files
+    studio.upload_file("train.py", "train.py")        # lands in the Studio home, the job's working dir
+    job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
+                  command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
+                  max_run_attempts=1)
+    deadline = time.time() + 20 * 60                  # the first job from a Studio waits ~5 min for a snapshot
+    while str(job.status).endswith("Pending"):
+        if time.time() > deadline:
+            job.stop()
+            raise TimeoutError(f"{job.name} still Pending after 20 min")
+        time.sleep(15)
+finally:                                              # the job runs on the snapshot, not the Studio
+    if str(studio.status).endswith(("Running", "Pending")):
+        studio.stop()
 job.wait(interval=15, timeout=2 * 3600, stop_on_timeout=True)
 print(job.status, job.total_cost)
-job.download_artifacts("outputs", "outputs")     # whatever train.py wrote under ./outputs
-studio.stop()
+job.download_artifacts("outputs", "outputs")         # whatever train.py wrote under ./outputs
 ```
 
-The job runs on a snapshot of the Studio, so the Studio can be stopped once `job.status` is
-`Running`. The first job from a Studio waits in `Pending` about 5 minutes while that snapshot is
-taken; later jobs reuse it and start faster.
+Later jobs from the same Studio reuse its snapshot and leave `Pending` sooner.
 
 **Prefer a job to a Studio for one-shot runs (train, eval, batch).** A job stops billing when its
 command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone
