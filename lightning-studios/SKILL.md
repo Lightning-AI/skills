@@ -177,8 +177,9 @@ for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, 
 
 `cost` is USD per hour and `wait_time` the expected seconds until a machine is free.
 `list_machines()` with no argument merges several accounts without saying which row belongs to
-which. Show the user the top rows with price and wait, and ask before starting a GPU unless they
-already named one.
+which. Show the user the top rows with price and wait. **Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
+per hour and the most the run can cost under its deadline. Ask even when the user named the GPU
+or gave a budget: a budget is a limit, not approval to spend it.
 
 **A Studio's cloud account is fixed at creation (`studio switch` can't move it), so create it on
 the chosen row's account** and start or switch it to that row's machine. What matters is that the
@@ -359,7 +360,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **For a one-shot run (train, eval, batch), prefer a job (`lightning-jobs`).** A job stops billing
   when its command exits, crash included; a crashed run on a Studio keeps the GPU billing. The
   exception is a short run on a tight deadline: the first job from a Studio waits about 5 minutes
-  for its snapshot, so run on a Studio started on the GPU, with a deadline that stops it.
+  for its snapshot, so run on a Studio started on the GPU, with a deadline that stops it. Pick
+  one before showing the plan and name it there, with where the outputs will land.
 - **Before relaunching on a GPU, check the last attempt isn't still holding it**, or the new run
   hits `CUDA out of memory`: `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
   should print nothing.

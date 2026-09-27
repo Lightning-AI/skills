@@ -267,7 +267,9 @@ the row's machine on that row's account (`Job.run(machine=m, cloud=acct, …)`, 
 with `cloud=acct`): what matters is that the account sells that GPU at that count. The SDK maps a
 GPU's names (`H200`, `lit-h200-1`, `lit-h200-141gb-1`) to one machine. `list_machines()` with no
 argument merges several accounts without saying which row belongs to which, so it can't tell you
-where to launch. Show the user the top rows with price and wait before launching on a GPU. For
+where to launch. Show the user the top rows with price and wait. **Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
+per hour and the most the run can cost under its deadline. Ask even when the user named the GPU
+or gave a budget: a budget is a limit, not approval to spend it. For
 quotes before login, `GET /v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
 skill has the provider values and the costing recipes). Don't invent a catalog endpoint:
 `/v1/accelerators`, `/v1/accelerator-catalog`, `/v1/pricing` and `/v1/compute/accelerators` all
@@ -348,7 +350,9 @@ Later jobs from the same Studio reuse its snapshot and leave `Pending` sooner.
 command exits, crash included. A crashed run on a Studio leaves the GPU billing idle until someone
 notices. The exception is a short run on a tight deadline: there, a Studio started directly on the
 GPU, with a deadline that stops it, finishes sooner than waiting for the snapshot (see the
-`lightning-studios` skill).
+`lightning-studios` skill). **Pick one before showing the plan, and name it there** with where
+the outputs will land: a job's under `jobs/<job-name>/` on the teamspace Drive, a Studio's in its
+home, which stays downloadable while the Studio is stopped. Don't promise one and run the other.
 
 **Parameter sweep: several jobs from one loop.**
 
@@ -391,7 +395,7 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 
 ## Gotchas
 
-- Jobs bill machine time while allocated; confirm with the user before launching on expensive GPUs (A100/H100/H200/B200) or high `num_machines`, and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
+- Jobs bill machine time while allocated; always confirm with the user before launching on a GPU or with `num_machines` > 1 (see *Machines*), and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **A slow `Pending` start is not a failure.** Image jobs can sit in `Pending`/`creating` for a long time before a machine is scheduled, and pending time is not billed. The machine listing's `wait_time` predicts this. If you give up at your deadline, `job.stop()` then `job.delete()`.
 - **`lightning job delete` without `-y` exits without deleting.** Non-interactively it reads the prompt from a closed stdin, prints `Are you sure you want to delete? [y/N]: Aborted.` and leaves the job listed and costing money. The failure is easy to miss in a log.
