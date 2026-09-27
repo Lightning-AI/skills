@@ -27,9 +27,7 @@ Both paths below end with the same message. It says nothing about which cloud to
 and setting it up is Claude's job.
 
 ```text
-Run finetune_eval.py on a GPU with at least 80 GB of memory (an H200 is ideal). There's no GPU
-here. I need results within 15 minutes and it must cost under $5. Show me the before/after scores
-and keep the adapter somewhere I can download it.
+Run finetune_eval.py on a GPU with at least 80 GB of memory (an H200 is ideal). There's no GPU here. I need results within 15 minutes and it must cost under $5. Show me the before/after scores and keep the adapter somewhere I can download it.
 ```
 
 ## Path A: Claude Code on your Mac

@@ -220,18 +220,43 @@ Prompts this skill handles: *"spin up a GPU studio and run my training script"*,
 **Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
 can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
 or never return. So start in the background and poll for readiness with a deadline (see Gotchas).
-The `lightning-jobs` skill reuses the four helpers below, with their imports:
+Other SDK calls (`run*`, `switch_machine`, `stop`) poll with no time limit of their own, so every
+call below goes through `bounded`: a stalled call raises instead of billing forever, and the
+`except` stops the Studio. The `lightning-jobs` skill reuses the helpers below, with their imports:
 
 ```python
-import glob, hashlib, os, re, shlex, threading, time
+import hashlib, os, re, shlex, threading, time
 from lightning_sdk import Machine, Studio, Teamspace
 
-def run_if_up(studio, cmd):
-    """(output, exit code), or ("", -1) while the Studio isn't Running (starting, between machines)."""
+def bounded(fn, seconds):
+    """fn()'s result, or TimeoutError after `seconds`: the SDK's own polls have no deadline."""
+    done, box = threading.Event(), {}
+    def _go():
+        try:
+            box["ok"] = fn()
+        except BaseException as e:
+            box["err"] = e
+        finally:
+            done.set()
+    threading.Thread(target=_go, daemon=True).start()
+    if not done.wait(seconds):
+        raise TimeoutError(f"{getattr(fn, '__name__', 'call')} still blocking after {seconds}s")
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok")
+
+def run_if_up(studio, cmd, seconds=120):
+    """(output, exit code), or ("", -1) while the Studio isn't Running (starting, between machines)
+    or the command doesn't answer within `seconds`."""
     try:
-        return studio.run_with_exit_code(cmd)
-    except RuntimeError:
+        return bounded(lambda: studio.run_with_exit_code(cmd), seconds)
+    except (RuntimeError, TimeoutError):
         return "", -1
+
+def stop_quietly(studio):
+    """Stop billing; fall back to `lightning studio stop` if this raises."""
+    if str(studio.status).endswith(("Running", "Pending")):
+        bounded(studio.stop, 300)
 
 def wait_ready(studio, minutes=10, failed=()):
     deadline = time.time() + minutes * 60
@@ -255,15 +280,20 @@ def start_ready(studio, machine, minutes=10):
     threading.Thread(target=_start, daemon=True).start()
     wait_ready(studio, minutes, failed)
 
-def upload_landed(studio, local, remote, minutes=3):
-    """Upload a file or folder (paths relative to the Studio home), then wait until the Studio's
-    disk has every file with the right content: the upload returns before it lands (see *Files*)."""
-    files = ([f for f in glob.glob(os.path.join(local, "**"), recursive=True) if os.path.isfile(f)]
-             if os.path.isdir(local) else [local])
+def upload_landed(studio, local, remote, minutes=3, skip=(".git", "__pycache__", ".venv", "node_modules")):
+    """Upload a file or folder (paths relative to the Studio home), hidden files included, then
+    wait until the Studio's disk has every file with the right content: the upload returns before
+    it lands (see *Files*). Folders named in `skip` stay behind."""
+    files = [local]
+    if os.path.isdir(local):
+        files = []
+        for root, dirs, names in os.walk(local):
+            dirs[:] = [d for d in dirs if d not in skip]
+            files += [os.path.join(root, n) for n in names]
     dest = {f: remote if f == local else f"{remote}/{os.path.relpath(f, local).replace(os.sep, '/')}"
             for f in files}
     for f in files:
-        studio.upload_file(f, dest[f], progress_bar=False)
+        bounded(lambda: studio.upload_file(f, dest[f], progress_bar=False), 600)
     want = [hashlib.md5(open(f, "rb").read()).hexdigest() for f in files]
     check = "cd ~ && md5sum " + " ".join(shlex.quote(dest[f]) for f in files)
     deadline = time.time() + minutes * 60
@@ -291,9 +321,10 @@ assert studio.cloud_account == acct, f"{studio.name} is on {studio.cloud_account
 try:                                                          # any failure from here stops the Studio
     start_ready(studio, Machine.CPU)
     upload_landed(studio, "./src", "src")                     # returns once the files are on disk
-    studio.run("cd ~/src && pip install -r requirements.txt") # setup at CPU rates
-    try:
-        studio.switch_machine(gpu)                            # the row picked from this account's list
+    out, code = run_if_up(studio, "cd ~/src && pip install -r requirements.txt", 30 * 60)  # at CPU rates
+    assert code == 0, out or "pip install failed or ran over 30 min"
+    try:                                                      # the row picked from this account's list
+        bounded(lambda: studio.switch_machine(gpu), 15 * 60)  # TimeoutError if it never lands
     except Exception as e:                                    # it can report this and switch anyway
         if "cannot switch to a Studio" not in str(e):
             raise
@@ -307,18 +338,18 @@ try:                                                          # any failure from
     assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another account"
     wait_ready(studio)                                        # a new machine: wait until it can run commands
     # train.exit gets the exit code when training ends; clear the last run's before launching
-    studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit' </dev/null >/dev/null 2>&1", timeout=30)
-    print(studio.run("tail -n 40 ~/src/train.log"))          # within the first minute: crashes show up in seconds
+    bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
+    print(run_if_up(studio, "tail -n 40 ~/src/train.log")[0])          # within the first minute: crashes show up in seconds
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
     while run_if_up(studio, "test -f ~/src/train.exit")[1] != 0:
         if time.time() > deadline:
-            raise TimeoutError(studio.run("tail -n 40 ~/src/train.log"))
-        print(studio.run("tail -n 1 ~/src/train.log"))        # progress line each poll
+            raise TimeoutError(run_if_up(studio, "tail -n 40 ~/src/train.log")[0])
+        print(run_if_up(studio, "tail -n 1 ~/src/train.log")[0])  # progress line each poll
         time.sleep(60)
-    assert studio.run("cat ~/src/train.exit") == "0", studio.run("tail -n 40 ~/src/train.log")
+    assert run_if_up(studio, "cat ~/src/train.exit")[0].strip() == "0", \
+        run_if_up(studio, "tail -n 40 ~/src/train.log")[0]
 except BaseException:
-    if str(studio.status).endswith(("Running", "Pending")):
-        studio.stop()
+    stop_quietly(studio)
     raise
 ```
 ```bash

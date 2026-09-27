@@ -317,7 +317,7 @@ can't return files on their own). Pick `ACCOUNT` and `MACHINE` from the live lis
 ```python
 import time
 from lightning_sdk import Job, Machine, Studio
-# start_ready, upload_landed: from the lightning-studios skill (*Set up on CPU, switch to a GPU*),
+# start_ready, upload_landed, stop_quietly: from the lightning-studios skill (*Set up on CPU, switch to a GPU*),
 # with its other helpers and imports
 
 studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
@@ -327,7 +327,8 @@ try:                                                  # the Studio stops on any 
     start_ready(studio, Machine.CPU)                  # CPU is enough: it only holds the files
     upload_landed(studio, "train.py", "train.py")     # the Studio home, the job's working dir; the
                                                       # snapshot is taken at Job.run, so it must be there
-    job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
+    job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=,
+                  cloud=ACCOUNT,                      # else the default cloud wins and can mismatch the Studio's
                   command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
                   max_run_attempts=1)
     deadline = time.time() + 20 * 60                  # the first job from a Studio waits ~5 min for a snapshot
@@ -337,8 +338,7 @@ try:                                                  # the Studio stops on any 
             raise TimeoutError(f"{job.name} still Pending after 20 min")
         time.sleep(15)
 finally:                                              # the job runs on the snapshot, not the Studio
-    if str(studio.status).endswith(("Running", "Pending")):
-        studio.stop()
+    stop_quietly(studio)
 job.wait(interval=15, timeout=2 * 3600, stop_on_timeout=True)
 print(job.status, job.total_cost)
 job.download_artifacts("outputs", "outputs")         # whatever train.py wrote under ./outputs
