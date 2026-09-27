@@ -117,10 +117,11 @@ puts `proj`'s files straight into the Studio's home, whether or not either path 
 keep the folder, name it in the destination: `lightning cp -r ./proj lit://…/studios/my-studio/proj/`.
 Check the result with `lightning ls -r` before running anything that expects the files in place.
 
-**Copy files in only after the Studio is ready, or they can reach the machine late.** `lightning cp`
-goes through storage, so a file copied during setup may be missing when the Studio becomes usable.
-`studio.upload_file` on a ready Studio lands at once. Check with `studio.run("ls ~")` before
-running anything that needs the file.
+**Uploads reach the machine late, even on a ready Studio.** `lightning cp` and
+`studio.upload_file` / `upload_folder` go through storage and return before the file is on the
+Studio's disk, so a command launched right after can fail with `No such file or directory`. Wait
+until the file is there before running anything that needs it: `upload_landed` in *Example
+workflows* does this.
 
 ## Python SDK
 
@@ -218,10 +219,10 @@ Prompts this skill handles: *"spin up a GPU studio and run my training script"*,
 **Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
 can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
 or never return. So start in the background and poll for readiness with a deadline (see Gotchas).
-The `lightning-jobs` skill reuses the three helpers below:
+The `lightning-jobs` skill reuses the four helpers below, with their imports:
 
 ```python
-import threading, time
+import glob, hashlib, os, re, shlex, threading, time
 from lightning_sdk import Machine, Studio, Teamspace
 
 def run_if_up(studio, cmd):
@@ -253,6 +254,25 @@ def start_ready(studio, machine, minutes=10):
     threading.Thread(target=_start, daemon=True).start()
     wait_ready(studio, minutes, failed)
 
+def upload_landed(studio, local, remote, minutes=3):
+    """Upload a file or folder (paths relative to the Studio home), then wait until the Studio's
+    disk has every file with the right content: the upload returns before it lands (see *Files*)."""
+    files = ([f for f in glob.glob(os.path.join(local, "**"), recursive=True) if os.path.isfile(f)]
+             if os.path.isdir(local) else [local])
+    dest = {f: remote if f == local else f"{remote}/{os.path.relpath(f, local).replace(os.sep, '/')}"
+            for f in files}
+    for f in files:
+        studio.upload_file(f, dest[f], progress_bar=False)
+    want = [hashlib.md5(open(f, "rb").read()).hexdigest() for f in files]
+    check = "cd ~ && md5sum " + " ".join(shlex.quote(dest[f]) for f in files)
+    deadline = time.time() + minutes * 60
+    while time.time() < deadline:
+        out, code = run_if_up(studio, check)
+        if code == 0 and re.findall(r"^[0-9a-f]{32}", out, re.M) == want:
+            return
+        time.sleep(5)
+    raise TimeoutError(f"{local} hasn't fully reached {studio.name} after {minutes} min")
+
 ts = Teamspace("my-org/my-teamspace")
 # the fastest, then cheapest, 1x H200 across the teamspace's cloud accounts (see *Machine types*)
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
@@ -269,7 +289,7 @@ assert studio.cloud_account == acct, f"{studio.name} is on {studio.cloud_account
 
 try:                                                          # any failure from here stops the Studio
     start_ready(studio, Machine.CPU)
-    studio.upload_folder("./src", "src")                      # after ready, so it lands at once
+    upload_landed(studio, "./src", "src")                     # returns once the files are on disk
     studio.run("cd ~/src && pip install -r requirements.txt") # setup at CPU rates
     try:
         studio.switch_machine(gpu)                            # the row picked from this account's list
@@ -286,7 +306,7 @@ try:                                                          # any failure from
     assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another account"
     wait_ready(studio)                                        # a new machine: wait until it can run commands
     # train.exit gets the exit code when training ends; clear the last run's before launching
-    studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit'", timeout=30)
+    studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; echo $? > train.exit' </dev/null >/dev/null 2>&1", timeout=30)
     print(studio.run("tail -n 40 ~/src/train.log"))          # within the first minute: crashes show up in seconds
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
     while run_if_up(studio, "test -f ~/src/train.exit")[1] != 0:
@@ -307,7 +327,7 @@ lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 
 For a short run where setup is light (a `uv` script that declares its own dependencies), skip
 the CPU phase but keep the `try` block and its deadline: `start_ready(studio, gpu)`, then
-`studio.upload_file("train.py", "src/train.py")`, drop the `pip`, switch and `nvidia-smi` steps,
+`upload_landed(studio, "train.py", "src/train.py")`, drop the `pip`, switch and `nvidia-smi` steps,
 and detach `env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py` in place of `python train.py`
 (see Gotchas).
 
@@ -362,6 +382,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`studio.switch_machine()` can raise `ApiException (400) … "cannot switch to a Studio"` and still
   switch.** Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*;
   don't restart or re-switch on it.
+- **Detach with `nohup … </dev/null >/dev/null 2>&1`.** Without the redirects, every later
+  `studio.run*()` output starts with `nohup: ignoring input`, which floods a log monitor.
 - **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character (`tail -c N` on a log with `é` or a progress bar, `head -c` on a text file) fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
 - **Passing both `teamspace="owner/teamspace"` and the deprecated `org=`/`user=` raises `ValueError`**
   (for `Teamspace`, `Studio` and `Job`). The old arguments alone still work but emit a `DeprecationWarning`.

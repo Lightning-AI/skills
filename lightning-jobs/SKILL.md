@@ -315,14 +315,16 @@ can't return files on their own). Pick `ACCOUNT` and `MACHINE` from the live lis
 ```python
 import time
 from lightning_sdk import Job, Machine, Studio
-# start_ready: from the lightning-studios skill (*Set up on CPU, switch to a GPU*), with its two helpers
+# start_ready, upload_landed: from the lightning-studios skill (*Set up on CPU, switch to a GPU*),
+# with its other helpers and imports
 
 studio = Studio("run-train", teamspace="my-org/my-teamspace", cloud=ACCOUNT, create_ok=True)
 # an existing Studio of that name is reused as is, on whatever cloud it was created on
 assert studio.cloud_account == ACCOUNT, f"{studio.name} is on {studio.cloud_account}: pick a new name"
 try:                                                  # the Studio stops on any failure, and once the job starts
     start_ready(studio, Machine.CPU)                  # CPU is enough: it only holds the files
-    studio.upload_file("train.py", "train.py")        # lands in the Studio home, the job's working dir
+    upload_landed(studio, "train.py", "train.py")     # the Studio home, the job's working dir; the
+                                                      # snapshot is taken at Job.run, so it must be there
     job = Job.run(name=f"train-{int(time.time())}", machine=MACHINE, studio=studio,  # no teamspace=
                   command="env -u UV_LIGHTNING_VIRTUALENV_ROOT uv run train.py",       # see Gotchas
                   max_run_attempts=1)
