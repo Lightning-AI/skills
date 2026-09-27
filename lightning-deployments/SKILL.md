@@ -235,6 +235,8 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 
 ## Gotchas
 
+- **Deployments bill for as long as a replica is up; confirm the spend with the user before creating one.** Get an explicit go-ahead before GPU machines, before `--min-replicas >= 1` (which bills continuously), and before raising `--max-replicas`, since the ceiling is what the bill can reach. Price the machine first with the `lightning-cost-estimation` skill.
+- **Verify a deployment against its public URL from `deployment inspect`, never against the app inside the source Studio.** The Studio proves the image; only the endpoint proves the service. A deployment can show a healthy replica and bill normally while returning 401 to every request.
 - **`min_replicas=0` stops billing at zero, and the next request waits for a cold start instead of failing.** The edge holds the connection open until a replica is ready (about 6 minutes on a GPU image), then returns a normal 200. It does not return 503 or refuse, so a client without a short timeout just waits. `min_replicas >= 1` bills continuously: flag this cost to the user.
 - **The scale-to-zero idle window and the health check are SDK-only.** `AutoScaleConfig(idle_threshold_seconds=...)` and `HttpHealthCheck(path=..., port=...)` have no `deployment create`/`update` flag (no `--health-check-path`/`--readiness-probe`). From the CLI you get the default idle window, and nothing stops traffic reaching a replica that is up but not ready.
 - **`Deployment.start()` on an existing deployment silently becomes an update/restart.** It won't error on a name collision.

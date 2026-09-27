@@ -249,7 +249,13 @@ vram_needed ≈ weights_gb × 1.15 + kv_cache_gb   # ~15% for activations/fragme
 ```
 
 Pick the smallest SKU where `vram_needed ≤ gpus × vram_per_gpu`, keeping the tensor-parallel degree a
-power of 2. A 70B model in BF16 ≈ 140 GB → 2×H100, or 1×B200 with room for KV cache.
+power of 2. Run the whole formula before picking, and keep units straight: "80 GB" is the vendor
+label, while `nvidia-smi` reports **81,559 MiB ≈ 85.5 decimal GB** per H100 (an H200 reads
+143,771 MiB ≈ 150.8 GB against a "141 GB" label). A 70B model in BF16 is 140 GB of weights, or
+`140 × 1.15 = 161 GB` before KV cache. That leaves only ~10 GB of the 171 GB on 2×H100: it fits at
+modest context and concurrency, so size the KV cache before promising more, or take 1×B200. Total
+memory is necessary, not sufficient: the model must also split across the cards at your
+tensor-parallel degree.
 
 **Training memory** = base weights + trainable state + activations:
 

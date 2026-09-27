@@ -86,6 +86,10 @@ Teamspaces reached through org-level permissions don't appear in
 
 ## Publish a durable link (the CLI flow)
 
+**A public link (`private=false`, the default below) needs the user's say-so in this request.**
+"Publish this" or "get me a public link" is authorization — don't ask twice. "Send this to the
+team" is not: say what the link exposes and get a yes, or use `-F private=true`.
+
 Three calls: upload into the `artifacts/` drive, read back the storage cluster
 it landed on, then register the object as a shared artifact. `share` and
 `shares` (below) need the `jq` binary; without it, parse the JSON yourself.
@@ -244,7 +248,8 @@ URL=$(share model-metrics.json)
 - **Unpublish reports success for links that don't exist.**
   `DELETE /v1/projects/{pid}/shared-artifacts/{id}` returns `HTTP 200` with `{}`
   for an id that was already revoked or mistyped. Exit code 0 is not proof;
-  check that the public URL 404s.
+  check that the public URL 404s. (`lightning rm`, by contrast, fails on a
+  missing path unless you pass `-f`.)
 - **Served HTML is not byte-identical to the upload, so don't checksum it
   against the source.** Cloudflare injects a Browser-Insights RUM beacon
   (`static.cloudflareinsights.com/beacon.min.js`) into HTML responses. It is
@@ -253,3 +258,6 @@ URL=$(share model-metrics.json)
   before mid-July 2026.** The list endpoint `GET
   /v1/projects/{pid}/shared-artifacts` is newer than the rest. Publish and
   unpublish still work there.
+- **A public link is open to anyone who has it, and revoking it doesn't recall
+  a copy already fetched.** Use `-F private=true` for anything that shouldn't
+  be world-readable.
