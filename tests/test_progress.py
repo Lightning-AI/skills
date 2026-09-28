@@ -408,6 +408,26 @@ class LiveRunFindings(unittest.TestCase):
         self.assertIn("hides this one in that project", out.stderr)
         self.assertTrue((d / store.LAUNCHER).exists())
 
+    def test_project_config_needs_an_explicit_project_dir(self):
+        home, proj, scratch, d = (Path(tempfile.mkdtemp()) for _ in range(4))
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+        env["HOME"] = str(home)
+        base = [sys.executable, str(ENTRY), "--dir", str(d), "statusline", "--config"]
+        out = subprocess.run(base, capture_output=True, text=True, env=env, cwd=scratch)
+        self.assertEqual((out.returncode, out.stdout), (2, ""))  # never guess from a scratchpad cwd
+        self.assertIn("--project-dir", out.stderr)
+        out = subprocess.run([*base, "--project-dir", str(proj)], capture_output=True, text=True, env=env, cwd=scratch)
+        self.assertEqual(out.returncode, 0)
+        self.assertIn(str(proj / ".claude" / "settings.local.json"), out.stderr)
+        self.assertNotIn(str(scratch), out.stderr)
+
+    def test_hint_names_no_guessed_project_path(self):
+        home, proj = tempfile.mkdtemp(), tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, HOME=home):
+            hint = must(settings.statusline_hint("r", proj))
+        self.assertIn("--project-dir", hint)
+        self.assertNotIn(proj + os.sep + ".claude", hint)
+
     def test_events_only_read_and_outlive_a_failed_attempt(self):
         d = Path(tempfile.mkdtemp()) / "not-yet"  # a sandboxed Monitor can't create this
         proc = subprocess.Popen(

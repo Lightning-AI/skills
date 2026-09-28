@@ -473,13 +473,14 @@ inside a status update, where it is easy to miss:
 
 - **All projects (recommend this).** One setup, and no question again in later sessions or
   other projects. Run the first command and merge what it prints into `~/.claude/settings.json`.
-- **This project only.** Run the second command from the directory Claude Code was started in
-  (not a parent or subfolder) and merge what it prints into that directory's
-  `.claude/settings.local.json`.
+- **This project only.** Pass the directory Claude Code was started in (your primary working
+  directory, never a scratchpad or temp folder) as `--project-dir`, and merge what it prints into
+  that directory's `.claude/settings.local.json`. It stays set for later sessions in that
+  project, so don't offer it as "this session only".
 
 ```bash
-python3 <SKILL_DIR>/progress.py statusline --config --user   # all projects
-python3 <SKILL_DIR>/progress.py statusline --config          # this project only
+python3 <SKILL_DIR>/progress.py statusline --config --user                       # all projects
+python3 <SKILL_DIR>/progress.py statusline --config --project-dir <PROJECT_DIR>  # this project only
 ```
 
 Claude Code asks for approval before the edit, because settings files are protected; that is

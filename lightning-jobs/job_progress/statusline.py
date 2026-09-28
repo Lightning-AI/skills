@@ -175,9 +175,24 @@ def shown(d: Path, s: dict[str, Any], now: float) -> bool:
     return pid_alive((read_json(d / "runs" / f"{s['run']}.json") or {}).get("pid"))
 
 
-def print_config(user: bool) -> int:
-    """Print the statusLine block, and where to merge it, on stderr."""
-    project_dir = session_dir()
+def print_config(user: bool, project_dir: str | None) -> int:
+    """Print the statusLine block, and where to merge it, on stderr.
+
+    Args:
+        user: target ~/.claude/settings.json instead of a project's settings.
+        project_dir: the directory Claude Code was started in; required unless `user`.
+
+    Returns:
+        The exit code.
+    """
+    if not user and not project_dir:
+        print(
+            "statusline --config needs --user (all projects) or --project-dir <the directory Claude Code "
+            "was started in>; the current directory may be a scratchpad, whose settings Claude Code never reads",
+            file=sys.stderr,
+        )
+        return 2
+    project_dir = os.path.abspath(project_dir or session_dir())
     target = user_settings() if user else os.path.join(project_dir, SETTINGS_FILES[0])
     path, cmd = statusline_setting(project_dir, user=user)
     print(json.dumps(statusline_snippet(cmd), indent=2))
@@ -200,7 +215,7 @@ def print_config(user: bool) -> int:
 
 def cmd_statusline(args: argparse.Namespace) -> int:
     if args.config:
-        return print_config(args.user)
+        return print_config(args.user, args.project_dir)
     if not sys.stdin.isatty():
         sys.stdin.read()  # Claude Code sends session JSON; the bars don't depend on it
     d = progress_dir()

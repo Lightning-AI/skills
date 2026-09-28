@@ -49,7 +49,7 @@ def statusline_hint(run: str, project_dir: str) -> str | None:
     return (
         "status-line bar is not set up. Ask the user once whether to add it for all projects "
         f"(`progress.py statusline --config --user`, for {user_settings()}; no question again in later "
-        "sessions) or just this one (`progress.py statusline --config`, for "
-        f"{os.path.join(project_dir, SETTINGS_FILES[0])})"
+        "sessions) or just this project (`progress.py statusline --config --project-dir <the directory "
+        "Claude Code was started in>`, for its .claude/settings.local.json)"
         + (f". Either keeps their current status line from {path}" if cmd else "")
     )
