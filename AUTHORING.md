@@ -150,6 +150,13 @@ run `claude plugin validate . --strict` before you push.
 Keep changes scoped to one skill per PR where you can; it makes review and
 `npx skills add` selection cleaner.
 
+## Python checks
+
+Skills that ship scripts (`lightning-jobs/progress.py`, `lightning-blog/md2blocks.py`)
+are linted, type-checked and tested on every PR. [AGENTS.md](AGENTS.md) covers setting
+up the checks locally with pre-commit, and the rules scripts follow: standard library only,
+Python 3.9 or newer, and every platform Claude Code runs on.
+
 ## Open a PR
 
 ```bash

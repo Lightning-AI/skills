@@ -359,10 +359,20 @@ lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
 **Show the user live progress, don't hand-roll it.** Once the run is detached, start the
-`lightning-jobs` skill's `progress.py` (its *Live progress, ETA and setbacks* section) on the
-Studio and the log. It gives the user a status-line bar, an ETA and setback tracking; printing
-log lines from the loop above, or asking them to `tail -f` a file, does not. Paths are relative
-to the Studio's home:
+`lightning-jobs` skill's `progress.py` on the Studio and the log (that skill's *Live progress,
+ETA and setbacks* section). It gives the user a status-line bar, an ETA and setback tracking;
+printing log lines from the loop above, or asking them to `tail -f` a file, does not.
+`progress.py` ships with the `lightning-jobs` skill, not with this one, so find it first:
+
+- **`lightning-jobs` is loaded or listed in this session:** use the base directory Claude Code
+  gave for it, and read its *Live progress* section.
+- **Otherwise** look next to this skill's own base directory (the plugin and `npx skills add`
+  both install the skills side by side): `ls <THIS_SKILL_DIR>/../lightning-jobs/progress.py`.
+- **Not found:** `lightning-jobs` isn't installed. Tell the user once that installing it adds the
+  live bar, and meanwhile report progress yourself: every few minutes of the wait loop above,
+  print the last `PROGRESS` line and any error from `tail -n 40 ~/src/train.log`.
+
+`<LIGHTNING_JOBS_SKILL_DIR>` is the folder found above. Paths are relative to the Studio's home:
 
 ```bash
 python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
