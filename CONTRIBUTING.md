@@ -164,6 +164,28 @@ In the PR description, say **what control plane you tested against** and paste a
 line or two of evidence (the URL you minted, the resource you listed). That's what
 tells a reviewer the skill actually works.
 
+## Release and roll back
+
+Merging to `main` doesn't ship anything. Users install from the `stable` branch: the Claude
+directory tracks it, and the marketplace entry in `.claude-plugin/marketplace.json` pins
+`ref: "stable"`.
+
+```
+merge PRs to main  →  release PR opens  →  a maintainer merges it  →  tag vX.Y.Z  →  stable moves
+```
+
+- **Write Conventional Commit messages** (`feat:`, `fix:`, `docs:` …). release-please reads them
+  to pick the next version and write `CHANGELOG.md`: `fix` bumps the patch, `feat` the minor,
+  and `!` or a `BREAKING CHANGE:` footer the major.
+- **Release:** review the open `chore(main): release X.Y.Z` PR and merge it. The `release`
+  workflow tags the commit and fast-forwards `stable` to it. Don't edit versions or
+  `CHANGELOG.md` by hand.
+- **Roll back:** revert the bad change on `main` (`git revert`, as a normal PR), then merge the
+  next release PR. Users get a new, higher version with the old content. Never move `stable`
+  backwards: Claude Code only updates people when the version goes up.
+- **After the first release**, delete `release-as` from `release-please-config.json`, or every
+  release stays at `1.0.0`.
+
 ## Install / try a skill locally
 
 ```bash
