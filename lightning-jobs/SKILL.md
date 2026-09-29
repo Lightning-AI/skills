@@ -368,8 +368,9 @@ for lr in ["1e-3", "3e-4", "1e-4"]:
 
 ## Live progress, ETA and setbacks
 
-For a job long enough to be worth watching, show the user how far along it is, when it should
-finish and what a failure cost. The platform reports only a job's status, so the job prints its
+Start the bar for every job and every detached Studio run the user waits on, unless they
+decline: show them how far along it is, when it should finish and what a failure cost. Say it
+comes with the run when you ask them to approve the launch. The platform reports only a job's status, so the job prints its
 own progress and `progress.py`, next to this file, turns it into a status-line bar and chat
 events. [references/progress.md](references/progress.md) has the details of every step: the
 line formats, Studio logs, the bar's layout and how setbacks are classified. `<SKILL_DIR>` is
@@ -384,7 +385,8 @@ job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
 1. **Make the job print progress**: `PROGRESS <step>/<total>` as soon as the total is known and
    then every step or few, from rank 0 only, counted in the unit that ends the run (seconds of a
    time budget, if that is what stops it). Mark stages with `PROGRESS_PHASE <name> <i>/<n>` when
-   the job does more than train. tqdm bars are a fallback.
+   the job does more than train. tqdm bars and a `step 60/200`-style counter are fallbacks, so
+   check what the script already prints before asking to add a line.
 
    ```python
    print(f"PROGRESS {step}/{total_steps}", flush=True)

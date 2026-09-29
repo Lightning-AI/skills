@@ -219,7 +219,9 @@ H200 isn't on AWS). The first workflow below guards against this:
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
 
-**Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
+**Set up on CPU, switch to a GPU, run, show the live bar, collect results, stop.** A run takes
+two background commands: this script, and `progress.py watch` for the user's live bar (see *Show
+the user live progress* after the code). Start both. `Running` comes before a Studio
 can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
 or never return. So start in the background and poll for readiness with a deadline (see Gotchas).
 Other SDK calls (`run*`, `switch_machine`, `stop`) poll with no time limit of their own, so every
@@ -343,7 +345,8 @@ try:                                                          # any failure from
     # clear the last run's before launching
     bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; c=$?; echo PROGRESS_EXIT $c >> train.log; echo $c > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
     print(run_if_up(studio, "tail -n 40 ~/src/train.log")[0])          # within the first minute: crashes show up in seconds
-    # now start progress.py watch (below) for the user's live bar; this loop only guards the deadline
+    # launched: start `progress.py watch` now as its own background command (*Show the user live
+    # progress* below); this loop only guards the deadline, so it prints nothing
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
     while run_if_up(studio, "test -f ~/src/train.exit")[1] != 0:
         if time.time() > deadline:
@@ -360,10 +363,13 @@ lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
 lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
-**Show the user live progress, don't hand-roll it.** Once the run is detached, start the
-`lightning-jobs` skill's `progress.py` on the Studio and the log (that skill's *Live progress,
-ETA and setbacks* section). It gives the user a status-line bar, an ETA and setback tracking;
-printing log lines from the loop above, or asking them to `tail -f` a file, does not.
+**Show the user live progress, don't hand-roll it.** This step is part of every detached run,
+not an extra. Right after the launch, start the `lightning-jobs` skill's `progress.py` on the
+Studio and the log as a separate background command, never from inside the script above (that
+skill's *Live progress, ETA and setbacks* section). It gives the user a status-line bar, an ETA
+and setback tracking. Printing log lines from the loop above, a Monitor that greps the
+launcher's output, or asking the user to `tail -f` a file does not: point the Monitor at
+`progress.py events` instead.
 `progress.py` ships with the `lightning-jobs` skill, not with this one, so find it first:
 
 - **`lightning-jobs` is loaded or listed in this session:** use the base directory Claude Code

@@ -18,6 +18,10 @@ PROGRESS_RE = re.compile(r"\bPROGRESS\s+(\d+)\s*/\s*(\d+)(?:.*?\battempt=(\d+))?
 TQDM_RE = re.compile(r"(\d{1,3})%\|[^|]*\|\s*(\d+)/(\d+)")
 EPOCH_RE = re.compile(r"\bEpoch\s+(\d+)")
 TQDM_SKIP_RE = re.compile(r"Validat|Sanity|Testing|Predict", re.I)
+# a script's own counter, e.g. `[train] step 60/200 loss 0.02` or `iter 3/50`
+STEP_RE = re.compile(r"\b(?:step|iter(?:ation)?)\s*[:=]?\s*(\d+)\s*/\s*(\d+)", re.I)
+# the most explicit kind of reading in a log wins; a lesser kind is ignored once a better one shows up
+SOURCE_RANK = {"step": 1, "tqdm": 2, "progress": 3}
 EXIT_RE = re.compile(r"\bPROGRESS_EXIT\s+(-?\d+)")
 STAGE_RE = re.compile(r"\bPROGRESS_PHASE\s+(\S+)(?:\s+(\d+)\s*/\s*(\d+))?")
 # warnings that mention an error word, e.g. PyTorch's `[W924 14:51:32 CUDACachingAllocator.cpp] ... OOM`
@@ -43,7 +47,9 @@ def split_timestamp(text: str) -> tuple[float | None, str]:
 def parse_progress(message: str) -> dict[str, Any] | None:
     """Return {step, total, attempt, epoch, source} from the last progress reading in a line.
 
-    tqdm redraws with carriage returns, so one log line can hold many readings: the last wins.
+    Reads, best first: `PROGRESS n/total`, a tqdm bar, then a `step n/total` counter the script
+    prints on its own. tqdm redraws with carriage returns, so one log line can hold many readings:
+    the last wins.
     """
     for seg in reversed(message.split("\r")):
         m = PROGRESS_RE.search(seg)
@@ -65,7 +71,22 @@ def parse_progress(message: str) -> dict[str, Any] | None:
                 "epoch": int(e.group(1)) if e else None,
                 "source": "tqdm",
             }
+        m = STEP_RE.search(seg)
+        if m and int(m.group(2)) > 0 and not TQDM_SKIP_RE.search(seg[: m.start()]):
+            e = EPOCH_RE.search(seg[: m.start()])
+            return {
+                "step": int(m.group(1)),
+                "total": int(m.group(2)),
+                "attempt": None,
+                "epoch": int(e.group(1)) if e else None,
+                "source": "step",
+            }
     return None
+
+
+def outranked(s: dict[str, Any], reading: dict[str, Any]) -> bool:
+    """A reading of a lesser kind than the log has already given, e.g. a tqdm bar next to PROGRESS lines."""
+    return SOURCE_RANK[reading["source"]] < SOURCE_RANK.get(s["source"] or "", 0)
 
 
 def parse_error(message: str) -> str | None:
@@ -167,8 +188,8 @@ def on_line(s: dict[str, Any], job: str, text: str, wall_now: float, dedupe: boo
     reading = parse_progress(message)
     if reading is None:
         return []
-    if s["source"] == "progress" and reading["source"] == "tqdm":
-        return []  # an explicit PROGRESS line outranks any tqdm bar in the same log
+    if outranked(s, reading):
+        return []
     return on_sample(s, reading, at)
 
 
@@ -254,7 +275,7 @@ def on_stage(
 def on_partial(s: dict[str, Any], text: str, now: float) -> list[dict[str, Any]]:
     """Read progress from a log's unfinished last line (tqdm redraws with \\r and no newline)."""
     reading = parse_progress(text)
-    if reading is None or (s["source"] == "progress" and reading["source"] == "tqdm"):
+    if reading is None or outranked(s, reading):
         return []
     if (reading["step"], reading["total"], reading["epoch"]) == (s["step"], s["total"], s["epoch"]):
         return []
@@ -295,13 +316,13 @@ def _classify(s: dict[str, Any], r: dict[str, Any]) -> str | None:
 def on_sample(s: dict[str, Any], r: dict[str, Any], at: float) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     run = s["run"]
-    if s["source"] == "tqdm" and r["source"] == "progress":
+    if s["source"] and SOURCE_RANK[r["source"]] > SOURCE_RANK[s["source"]]:  # a better kind of reading takes over
         s.update(step=None, total=None, peak=None, epoch=None, samples=[], since_reset=0)
     kind = _classify(s, r)
-    if kind and r["source"] == "tqdm" and r["epoch"] == s["epoch"] and not s.get("attempt_fresh"):
-        # scripts draw a fresh tqdm bar per pass (lm-eval: one per few-shot setting), so a drop
-        # within an attempt is a new bar; only the first reading after a relaunch shows ground
-        # lost, and so does an epoch number going backwards
+    if kind and r["source"] != "progress" and r["epoch"] == s["epoch"] and not s.get("attempt_fresh"):
+        # scripts draw a fresh tqdm bar per pass (lm-eval: one per few-shot setting), and a step
+        # counter can restart per pass too, so a drop within an attempt is a new bar; only the first
+        # reading after a relaunch shows ground lost, and so does an epoch number going backwards
         s.update(samples=[], since_reset=0, eta_s=None, rate=None, peak=r["step"], peak_epoch=r["epoch"])
         s["milestone"] = (pct(r["step"], r["total"]) or 0) // 10
         kind = None
@@ -424,7 +445,7 @@ def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: f
                 events.append(make_event("started", run, "running", now))
         if s["phase"] == "starting" and s["started_at"] and not s["no_progress_warned"] and now - s["started_at"] > 600:
             s["no_progress_warned"] = True
-            events.append(make_event("no-progress", run, "running 10m with no PROGRESS or tqdm line yet", now))
+            events.append(make_event("no-progress", run, "running 10m with no PROGRESS, tqdm or step line yet", now))
         bar_open = s["step"] is not None and s["total"] and s["step"] < s["total"]
         if s["phase"] in ("running", "recovering") and s["last_sample_at"] is not None and bar_open:
             # after a relaunch or requeue, give the new process time to start before calling it stalled
