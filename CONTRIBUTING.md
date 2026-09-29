@@ -1,4 +1,4 @@
-# Authoring & managing Lightning AI skills
+# Contributing: authoring & managing Lightning AI skills
 
 How to add, update, and maintain the skills in this repo. Each skill teaches an
 AI coding agent how to drive one part of the Lightning AI platform, so the bar is:
@@ -135,8 +135,8 @@ Tips:
 the table in `README.md`. If it introduces a new capability worth calling out,
 mention it in the README intro too. Public skills also need their directory added
 to the `skills` array in `.claude-plugin/plugin.json`, or the Claude Code plugin
-won't ship them — the array is explicit precisely so internal skills
-(`lightning-blog`) stay out of it.
+won't ship them. Every skill here is public: internal-only skills live in a
+separate private repo, not this one.
 
 **Update:** edit the `SKILL.md`. Re-run the affected commands against a control
 plane before committing — the API may have changed under you. Keep the README row
@@ -152,7 +152,7 @@ Keep changes scoped to one skill per PR where you can; it makes review and
 
 ## Python checks
 
-Skills that ship scripts (`lightning-jobs/progress.py`, `lightning-blog/md2blocks.py`)
+Skills that ship scripts (such as `lightning-jobs/progress.py`)
 are linted, type-checked and tested on every PR. [AGENTS.md](AGENTS.md) covers setting
 up the checks locally with pre-commit, and the rules scripts follow: standard library only,
 Python 3.9 or newer, and every platform Claude Code runs on.
@@ -170,6 +170,28 @@ gh pr create --fill
 In the PR description, say **what control plane you tested against** and paste a
 line or two of evidence (the URL you minted, the resource you listed). That's what
 tells a reviewer the skill actually works.
+
+## Release and roll back
+
+Merging to `main` doesn't ship anything. Users install from the `stable` branch: the Claude
+directory tracks it, and the marketplace entry in `.claude-plugin/marketplace.json` pins
+`ref: "stable"`.
+
+```
+merge PRs to main  →  release PR opens  →  a maintainer merges it  →  tag vX.Y.Z  →  stable moves
+```
+
+- **Write Conventional Commit messages** (`feat:`, `fix:`, `docs:` …). release-please reads them
+  to pick the next version and write `CHANGELOG.md`: `fix` bumps the patch, `feat` the minor,
+  and `!` or a `BREAKING CHANGE:` footer the major.
+- **Release:** review the open `chore(main): release X.Y.Z` PR and merge it. The `release`
+  workflow tags the commit and fast-forwards `stable` to it. Don't edit versions or
+  `CHANGELOG.md` by hand.
+- **Roll back:** revert the bad change on `main` (`git revert`, as a normal PR), then merge the
+  next release PR. Users get a new, higher version with the old content. Never move `stable`
+  backwards: Claude Code only updates people when the version goes up.
+- **After the first release**, delete `release-as` from `release-please-config.json`, or every
+  release stays at `1.0.0`.
 
 ## Install / try a skill locally
 

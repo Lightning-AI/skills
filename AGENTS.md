@@ -3,7 +3,7 @@
 Agent skills for Lightning AI: each `lightning-<area>/SKILL.md` teaches an agent one part of the
 platform, and a few skills ship helper scripts next to their `SKILL.md`. This file covers the dev
 environment: setting it up, the checks every change must pass, and the rules for scripts. How to
-write and test a skill itself is in [AUTHORING.md](AUTHORING.md).
+write and test a skill itself is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Layout
 
@@ -12,7 +12,6 @@ write and test a skill itself is in [AUTHORING.md](AUTHORING.md).
 | `lightning-*/SKILL.md` | the skills |
 | `lightning-*/references/` | detail a skill links to, loaded only when needed |
 | `lightning-jobs/progress.py`, `lightning-jobs/job_progress/` | live job progress: poller, Monitor feed, status line |
-| `lightning-blog/md2blocks.py` | Markdown to blog blocks |
 | `examples/` | end-to-end tasks for trying the skills; each declares its own dependencies |
 | `tests/` | unit tests for the scripts |
 | `pyproject.toml` | settings for ruff, pyright, pydoclint and Import Linter (nothing to install) |
@@ -82,5 +81,5 @@ install outside the sandbox. Later runs reuse the cached environments.
 ## Commits and PRs
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), e.g.
-`fix(jobs): …` or `ci: …`. Open PRs as [AUTHORING.md](AUTHORING.md#open-a-pr) describes. The
+`fix(jobs): …` or `ci: …`. Open PRs as [CONTRIBUTING.md](CONTRIBUTING.md#open-a-pr) describes. The
 Checks workflow runs on every PR; keep it green.

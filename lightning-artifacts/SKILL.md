@@ -1,6 +1,8 @@
 ---
 name: lightning-artifacts
 description: Publish a local file (HTML report, PDF, image, dataset sample, build output) to Lightning AI and get a durable, public lightning.ai/artifacts/<id> link that never expires and renders inline in the browser. Also lists the artifacts drive, unpublishes (revokes) links and deletes the files behind them, all through the `lightning` CLI (`lightning-sdk` package) with `lightning login` or an API key, no code. Use when the user wants to share a file, a generated one-pager, or an agent-made artifact as a permanent URL, hand a file to a teammate or CI job, see or revoke existing shared links, or asks to "get a public / shareable link for this file".
+license: Apache-2.0
+compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
 
 # Lightning AI Artifacts (durable shareable file links)

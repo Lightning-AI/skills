@@ -8,7 +8,7 @@ line-length = 120
 target-version = "py39"
 # examples declare their own Python (PEP 723 header), newer than the skills' floor
 per-file-target-version = { "examples/**" = "py310" }
-src = ["lightning-jobs", "lightning-blog", "tests"]
+src = ["lightning-jobs", "tests"]
 # the skill docs' code examples line comments up by hand for reading; leave Markdown alone
 extend-exclude = ["*.md"]
 
