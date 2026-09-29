@@ -88,6 +88,7 @@ def parse_args():
 
 # ---------- data ----------
 
+
 def load_rows(tok, args):
     """Held-out test requests, then enough training requests for --max-steps; all within --max-len."""
     ds = load_dataset("argilla/apigen-function-calling", split="train")
@@ -101,9 +102,13 @@ def load_rows(tok, args):
             tools, gold = json.loads(r["tools"]), json.loads(r["answers"])
         except json.JSONDecodeError:
             continue
-        row = {"query": r["query"], "tools": tools, "gold": gold,
-               "prompt": PROMPT.format(tools=json.dumps(tools), query=r["query"]),
-               "target": " " + json.dumps(gold)}
+        row = {
+            "query": r["query"],
+            "tools": tools,
+            "gold": gold,
+            "prompt": PROMPT.format(tools=json.dumps(tools), query=r["query"]),
+            "target": " " + json.dumps(gold),
+        }
         # counted as training builds it: prompt and target tokenized apart, plus the EOS token
         if len(tok(row["prompt"])["input_ids"]) + len(tok(row["target"])["input_ids"]) + 1 > args.max_len:
             continue
@@ -150,6 +155,7 @@ def score(row, text):
 
 # ---------- eval ----------
 
+
 class ReplyDone(StoppingCriteria):
     """Stop each reply at the end of its first line or its first complete JSON value, whichever
     comes first. Base models often open with a line break, or keep going on the same line after the
@@ -191,7 +197,7 @@ class ReplyDone(StoppingCriteria):
 
     def __call__(self, input_ids, scores, **kwargs):
         new = self.tok.batch_decode(input_ids[:, -1:], skip_special_tokens=True)
-        for st, text in zip(self.state, new):
+        for st, text in zip(self.state, new, strict=False):
             if not st[4]:
                 self.feed(st, text)
         return torch.tensor([st[4] for st in self.state], device=input_ids.device)
@@ -206,33 +212,41 @@ def evaluate(model, tok, rows, args, label):
     hits, samples = Counter(), []
     t0 = time.time()
     for i in range(0, len(rows), args.eval_batch_size):
-        batch = rows[i:i + args.eval_batch_size]
-        enc = tok([r["prompt"] for r in batch], return_tensors="pt", padding="max_length",
-                  max_length=args.max_len).to(model.device)
+        batch = rows[i : i + args.eval_batch_size]
+        enc = tok([r["prompt"] for r in batch], return_tensors="pt", padding="max_length", max_length=args.max_len).to(
+            model.device
+        )
         width = enc["input_ids"].shape[1]
         out = model.generate(
-            **enc, max_new_tokens=max_new, do_sample=False, pad_token_id=tok.pad_token_id,
+            **enc,
+            max_new_tokens=max_new,
+            do_sample=False,
+            pad_token_id=tok.pad_token_id,
             stopping_criteria=StoppingCriteriaList([ReplyDone(tok, len(batch))]),
         )
         texts = tok.batch_decode(out[:, width:], skip_special_tokens=True)
-        for r, text in zip(batch, texts):
+        for r, text in zip(batch, texts, strict=False):
             exact, names, valid = score(r, text)
             multi = len(r["gold"]) > 1
             hits.update(exact=exact, names=names, valid=valid, multi=multi, exact_multi=exact and multi)
             if len(samples) < 20:
-                samples.append({"model": label, "query": r["query"], "gold": r["gold"],
-                                "reply": first_line(text), "exact": exact})
+                samples.append(
+                    {"model": label, "query": r["query"], "gold": r["gold"], "reply": first_line(text), "exact": exact}
+                )
     n = len(rows)
     res = {k: round(hits[k] / n, 4) for k in ("exact", "names", "valid")}
     res["exact_multi"] = round(hits["exact_multi"] / max(1, hits["multi"]), 4)
     res.update(n=n, n_multi=hits["multi"], seconds=round(time.time() - t0, 1))
-    print(f"[eval:{label}] exact={res['exact']:.1%} names={res['names']:.1%} valid={res['valid']:.1%} "
-          f"exact_multi={res['exact_multi']:.1%} (n={n}, {res['n_multi']} multi-call) in {res['seconds']}s",
-          flush=True)
+    print(
+        f"[eval:{label}] exact={res['exact']:.1%} names={res['names']:.1%} valid={res['valid']:.1%} "
+        f"exact_multi={res['exact_multi']:.1%} (n={n}, {res['n_multi']} multi-call) in {res['seconds']}s",
+        flush=True,
+    )
     return res, samples
 
 
 # ---------- train ----------
+
 
 def build_examples(tok, rows, max_len):
     examples = []
@@ -250,9 +264,9 @@ def collate(batch, pad_id, width, device):
     labels = torch.full((len(batch), width), -100)
     mask = torch.zeros((len(batch), width), dtype=torch.long)
     for j, (x, y) in enumerate(batch):
-        ids[j, :len(x)] = torch.tensor(x)
-        labels[j, :len(y)] = torch.tensor(y)
-        mask[j, :len(x)] = 1
+        ids[j, : len(x)] = torch.tensor(x)
+        labels[j, : len(y)] = torch.tensor(y)
+        mask[j, : len(x)] = 1
     return ids.to(device), labels.to(device), mask.to(device)
 
 
@@ -271,13 +285,15 @@ def train(model, tok, rows, args):
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr, weight_decay=0.0)
     warmup = max(1, args.max_steps // 20)
-    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / warmup)
-                                              * 0.5 * (1 + math.cos(math.pi * min(s, args.max_steps) / args.max_steps)))
+    sched = torch.optim.lr_scheduler.LambdaLR(
+        opt,
+        lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (1 + math.cos(math.pi * min(s, args.max_steps) / args.max_steps)),
+    )
     model.train()
     t0, step, losses = time.time(), 0, []
     while step < args.max_steps:
         start = (step * args.batch_size) % len(examples)
-        batch = examples[start:start + args.batch_size]
+        batch = examples[start : start + args.batch_size]
         ids, labels, mask = collate(batch, tok.pad_token_id, args.max_len, model.device)
         loss = answer_loss(model, ids, labels, mask)
         loss.backward()
@@ -289,16 +305,24 @@ def train(model, tok, rows, args):
         losses.append(loss.item())
         elapsed = time.time() - t0
         if step % 10 == 0 or step == 1:
-            print(f"[train] step {step}/{args.max_steps} loss {sum(losses[-10:]) / len(losses[-10:]):.4f} "
-                  f"{elapsed / step:.2f}s/step", flush=True)
+            print(
+                f"[train] step {step}/{args.max_steps} loss {sum(losses[-10:]) / len(losses[-10:]):.4f} "
+                f"{elapsed / step:.2f}s/step",
+                flush=True,
+            )
         if elapsed > args.train_minutes * 60:
             print(f"[train] {args.train_minutes} min budget reached at step {step}; stopping early", flush=True)
             break
-    return {"steps": step, "examples_seen": step * args.batch_size,
-            "final_loss": round(sum(losses[-10:]) / len(losses[-10:]), 4), "seconds": round(time.time() - t0, 1)}
+    return {
+        "steps": step,
+        "examples_seen": step * args.batch_size,
+        "final_loss": round(sum(losses[-10:]) / len(losses[-10:]), 4),
+        "seconds": round(time.time() - t0, 1),
+    }
 
 
 # ---------- main ----------
+
 
 def main():
     args = parse_args()
@@ -316,8 +340,10 @@ def main():
         try:
             import fla  # noqa: F401  fast kernels for the linear-attention layers
         except ImportError:
-            print("[setup] WARNING: flash-linear-attention missing; linear-attention layers use a slow fallback",
-                  flush=True)
+            print(
+                "[setup] WARNING: flash-linear-attention missing; linear-attention layers use a slow fallback",
+                flush=True,
+            )
     elif not args.smoke:
         raise SystemExit("No CUDA GPU found. This job needs a GPU with ~80 GB of memory (--smoke runs on CPU).")
 
@@ -325,23 +351,36 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model, info = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.bfloat16 if device == "cuda" else torch.float32,  # CPU bf16 is very slow
-        device_map=device, output_loading_info=True)
+        args.model,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,  # CPU bf16 is very slow
+        device_map=device,
+        output_loading_info=True,
+    )
     if info.get("missing_keys"):
         # A text-only class that silently re-initializes weights would train and score garbage.
         raise SystemExit(f"Checkpoint left {len(info['missing_keys'])} weights unset, e.g. {info['missing_keys'][:3]}")
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
-    print(f"[setup] loaded {sum(p.numel() for p in model.parameters()) / 1e9:.1f}B params "
-          f"in {time.time() - t_start:.0f}s", flush=True)
+    print(
+        f"[setup] loaded {sum(p.numel() for p in model.parameters()) / 1e9:.1f}B params "
+        f"in {time.time() - t_start:.0f}s",
+        flush=True,
+    )
 
     test, train_rows = load_rows(tok, args)
     base, base_samples = evaluate(model, tok, test, args, "base")
 
-    model = get_peft_model(model, LoraConfig(
-        r=args.lora_rank, lora_alpha=2 * args.lora_rank, lora_dropout=0.0,
-        target_modules="all-linear", task_type="CAUSAL_LM"))
+    model = get_peft_model(
+        model,
+        LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=2 * args.lora_rank,
+            lora_dropout=0.0,
+            target_modules="all-linear",
+            task_type="CAUSAL_LM",
+        ),
+    )
     model.print_trainable_parameters()
     train_stats = train(model, tok, train_rows, args)
     model.save_pretrained(out / "adapter")
@@ -350,15 +389,19 @@ def main():
     tuned, tuned_samples = evaluate(model, tok, test, args, "tuned")
 
     metrics = {
-        "model": args.model, "dataset": "argilla/apigen-function-calling (xLAM subset)", "gpu": gpu,
-        "base": base, "tuned": tuned,
+        "model": args.model,
+        "dataset": "argilla/apigen-function-calling (xLAM subset)",
+        "gpu": gpu,
+        "base": base,
+        "tuned": tuned,
         "gain_exact": round(tuned["exact"] - base["exact"], 4),
         "gain_exact_multi": round(tuned["exact_multi"] - base["exact_multi"], 4),
-        "train": train_stats, "total_seconds": round(time.time() - t_start, 1),
+        "train": train_stats,
+        "total_seconds": round(time.time() - t_start, 1),
         "peak_gpu_gb": round(torch.cuda.max_memory_allocated() / 2**30, 1) if device == "cuda" else None,
         "note": "exact = every call and argument right; names = right tools chosen; "
-                "valid = well-formed JSON calls to tools that exist; exact_multi = exact, on requests "
-                "that need 2+ calls",
+        "valid = well-formed JSON calls to tools that exist; exact_multi = exact, on requests "
+        "that need 2+ calls",
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
     with open(out / "samples.jsonl", "w") as f:
