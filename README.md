@@ -68,6 +68,11 @@ cp -r $SKILLS ~/.claude/skills/
 - Python with `uv` or `pip`. Skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
 - A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional)
 
+> [!IMPORTANT]
+> These skills create real, billed resources on your Lightning AI account (Studios, jobs,
+> deployments, sandboxes). They ask before anything that spends money or makes something
+> public, but you are responsible for what runs under your account.
+
 ## Conventions
 
 - Skills never guess the organization or teamspace: when more than one is available and none is configured, they ask the user which one to use.
@@ -75,6 +80,17 @@ cp -r $SKILLS ~/.claude/skills/
 
 ## Contributing
 
-Adding or editing a skill? See **[AUTHORING.md](AUTHORING.md)** for the `SKILL.md`
+Adding or editing a skill? See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the `SKILL.md`
 format, the house-style section layout, the conventions above, and how to
 live-test every command against a control plane before opening a PR.
+
+## Support
+
+- Bugs and feature requests: [open an issue](https://github.com/Lightning-AI/skills/issues)
+- Security problems: see [SECURITY.md](SECURITY.md), and don't file them as public issues
+- Changes between versions: [CHANGELOG.md](CHANGELOG.md)
+
+## License
+
+[Apache-2.0](LICENSE). By contributing you agree your contributions are licensed the same way,
+and to follow the [code of conduct](CODE_OF_CONDUCT.md).

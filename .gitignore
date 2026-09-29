@@ -2,3 +2,11 @@
 
 # run outputs from examples (metrics, samples, adapters)
 examples/*/outputs/
+
+# local environments and editor/OS clutter
+.venv/
+.vscode/
+.DS_Store
+
+# stray patch files from git format-patch
+*.patch

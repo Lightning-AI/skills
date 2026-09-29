@@ -1,0 +1,48 @@
+name: release
+
+# Merging to main never ships anything by itself. release-please keeps one
+# release PR open; merging that PR is the human approval. It then tags the
+# release, and the promote job moves the `stable` branch that users install from.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          # A PAT or GitHub App token lets CI run on the release PR;
+          # the default token works but GitHub skips CI on PRs it opens.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  promote:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward stable to the new release
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        # No --force: stable only ever moves forward. Roll back by reverting on
+        # main and releasing again, so the version number keeps going up.
+        run: git push origin "refs/tags/${TAG}^{commit}:refs/heads/stable"
