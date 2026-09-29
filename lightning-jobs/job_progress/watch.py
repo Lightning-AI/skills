@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import os
 import re
 import shlex
@@ -39,6 +40,7 @@ from .tracker import (
     on_line,
     on_partial,
     on_tick,
+    open_attempt,
     parse_error,
     recent_cause,
 )
@@ -47,6 +49,7 @@ TERMINAL_STATUSES = ("Completed", "Failed", "Stopped")
 SUPERVISE_INTERVAL = 5.0
 STUDIO_INTERVAL = 10.0
 STUDIO_READ_LIMIT = 4_000_000
+SEAM_BYTES = 1024
 COST_INTERVAL = 30.0
 
 
@@ -117,15 +120,27 @@ class Follower(threading.Thread):
             self.error = f"{type(ex).__name__}: {ex}"
 
 
-def preflight(job: str | None, studio: str | None, teamspace: str | None) -> None:
-    """Fail fast, with the fix, when the control plane is unreachable (the agent-sandbox case)."""
+def teamspace_of(workload: Any) -> tuple[str | None, str | None]:
+    """(owner/name, id) of the teamspace a Job or Studio resolved to."""
+    ts = getattr(workload, "teamspace", None)
+    if ts is None:
+        return None, None
+    owner = getattr(getattr(ts, "owner", None), "name", None)
+    name = getattr(ts, "name", None)
+    return (f"{owner}/{name}" if owner and name else name), getattr(ts, "id", None)
+
+
+def preflight(job: str | None, studio: str | None, teamspace: str | None) -> tuple[str | None, str | None]:
+    """Fail fast, with the fix, when the control plane is unreachable (the agent-sandbox case).
+    Returns the (owner/name, id) of the teamspace the workload is in, so a run never depends on
+    which teamspace happens to be the configured default (`teamspace` None)."""
     from lightning_sdk import Job, Studio
 
     try:
-        if studio:
-            Studio(studio, teamspace=teamspace, create_ok=False)  # never create a Studio by accident
-        elif job:
-            Job(job, teamspace=teamspace)
+        # never create a Studio by accident
+        found = Studio(studio, teamspace=teamspace, create_ok=False) if studio else Job(job or "", teamspace=teamspace)
+        name, ts_id = teamspace_of(found)
+        return name or teamspace, ts_id
     except Exception as ex:
         text = f"{type(ex).__name__}: {ex}"
         if re.search(r"NameResolution|resolve|ConnectionError|Max retries|timed out|ProxyError", text, re.I):
@@ -137,24 +152,59 @@ def preflight(job: str | None, studio: str | None, teamspace: str | None) -> Non
         raise
 
 
+def same_workload(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    if (a.get("kind"), a["name"]) != (b.get("kind"), b["name"]):
+        return False
+    if a.get("teamspace_id") and b.get("teamspace_id"):
+        return a["teamspace_id"] == b["teamspace_id"]
+    return a.get("teamspace") == b.get("teamspace")
+
+
+def default_run(d: Path, base: str, entry: dict[str, Any]) -> tuple[str, bool]:
+    """(run name, start fresh) for a watch without --run: `base` unless another workload holds it.
+
+    The same job name in two teamspaces, or `train.log` in two Studios, are different runs, so a
+    name held by another workload gets a qualifier. A finished run of the same workload starts
+    over; only an explicit --run continues one.
+    """
+    ident = f"{entry.get('kind')}|{entry['name']}|{entry.get('teamspace')}"
+    qualifier = entry.get("studio") or (entry.get("teamspace") or "default").replace("/", "-")
+    digest = hashlib.sha1(ident.encode()).hexdigest()[:8]
+    for run in (base, f"{base}@{qualifier}", f"{base}@{digest}"):
+        runfile = read_json(d / "runs" / f"{run}.json")
+        if not runfile or not runfile.get("jobs"):
+            return run, True
+        if same_workload(runfile["jobs"][0], entry):
+            state = read_json(d / "state" / f"{run}.json") or {}
+            return run, state.get("phase") in FINAL_PHASES and not pid_alive(runfile.get("pid"))
+    return f"{base}@{digest}", True
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     if bool(args.studio) != bool(args.log) or bool(args.job) == bool(args.studio):
         sys.exit("watch takes either a JOB name, or --studio NAME together with --log PATH")
     ensure_sdk()
-    preflight(args.job, args.studio, args.teamspace)
+    teamspace, teamspace_id = preflight(args.job, args.studio, args.teamspace)
     d = progress_dir()
     ensure_dirs(d)
     install_launcher(d)  # keeps a registered status line on this, the newest, copy of the script
     if args.studio:
-        name = f"{args.studio}:{args.log}"
+        name, base = f"{args.studio}:{args.log}", Path(args.log).stem
         entry = {"kind": "studio", "name": name, "studio": args.studio, "log": args.log}
-        run = args.run or Path(args.log).stem
     else:
-        name, entry, run = args.job, {"kind": "job", "name": args.job}, args.run or args.job
-    entry.update(teamspace=args.teamspace, added_at=time.time())
+        name, base, entry = args.job, args.job, {"kind": "job", "name": args.job}
+    # the resolved teamspace, not the flag: the configured default can change while this runs
+    entry.update(teamspace=teamspace, teamspace_id=teamspace_id, added_at=time.time())
+    run, fresh = (args.run, False) if args.run else default_run(d, base, entry)
     run_path, state_path = d / "runs" / f"{run}.json", d / "state" / f"{run}.json"
-    runfile = read_json(run_path) or {"run": run, "jobs": [], "notes": [], "abandoned": False, "pid": None}
-    if not any(j["name"] == name for j in runfile["jobs"]):
+    runfile = (None if fresh else read_json(run_path)) or {
+        "run": run,
+        "jobs": [],
+        "notes": [],
+        "abandoned": False,
+        "pid": None,
+    }
+    if not any(same_workload(j, entry) for j in runfile["jobs"]):
         runfile["jobs"].append(entry)
     if args.note:
         runfile["notes"].append({"at": time.time(), "job": name, "note": args.note})
@@ -175,15 +225,20 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
     runfile["pid"] = os.getpid()
     write_json(run_path, runfile)
+    state = (None if fresh else read_json(state_path)) or new_state(run)
+    if state["phase"] in FINAL_PHASES or state["phase"] == "waiting":
+        state["phase"] = "pending"
+        state["finished_at"] = None
+    state["updated_at"] = time.time()
+    write_json(state_path, state)
+    # marks where this poller's part of the run starts, for a Monitor that starts after it
+    append_events(d, [make_event("watching", run, f"watching {name}", time.time())])
+    print(f"run {run}: watching {name}", flush=True)
     hint = statusline_hint(run, session_dir())
     if hint:
         append_events(d, [make_event("hint", run, hint, time.time())])
         print(f"{run}: {hint}", flush=True)
 
-    state = read_json(state_path) or new_state(run)
-    if state["phase"] in FINAL_PHASES or state["phase"] == "waiting":
-        state["phase"] = "pending"
-        state["finished_at"] = None
     lock = threading.Lock()
 
     def save(events: list[dict[str, Any]]) -> None:
@@ -199,7 +254,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             if events or time.time() - (state["updated_at"] or 0) > 1:
                 save(events)
 
-    idx = next(i for i, j in enumerate(runfile["jobs"]) if j["name"] == name)
+    idx = next(i for i, j in enumerate(runfile["jobs"]) if same_workload(j, entry))
     while True:
         runfile = read_json(run_path) or runfile
         entry = runfile["jobs"][idx]
@@ -208,6 +263,9 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 state["issue_since"] = state["issue_since"] or state["last_sample_at"]
                 state["job_running_since"] = None
                 end_attempt(state, time.time())
+                # a new workload is the next attempt, and its status and attempt numbers start over
+                open_attempt(state)
+                state.update(status=None, platform_attempt=None, closed_attempt=None)
             if state["phase"] == "waiting":
                 state["phase"] = "pending"
             state["job"] = entry["name"]
@@ -332,32 +390,49 @@ def supervise(entry, state, lock, save, sink, run_path, idx, args) -> str:
         time.sleep(SUPERVISE_INTERVAL)
 
 
-def studio_read_command(path: str, offset: int) -> str:
-    """Report the log's size, whether any process still has it open, and its new bytes as base64.
+def studio_read_command(path: str, offset: int, seam: int = 0) -> str:
+    """Report the log's size, inode, whether any process still has it open, the `seam` bytes that
+    end at `offset`, and the bytes after `offset`, both as base64.
 
-    `Studio.run_with_exit_code` strips its output, so raw log bytes would lose their trailing
-    newline; base64 keeps them exact. The open-file check walks /proc, so it needs no extra tools.
+    The seam and inode tell a log that was replaced from one that only grew: a relaunch that
+    overwrites the log can outgrow the old offset between two reads. `Studio.run_with_exit_code`
+    strips its output, so raw log bytes would lose their trailing newline; base64 keeps them exact.
+    The open-file check walks /proc, so it needs no extra tools.
     """
     if path.startswith("~/"):  # the Studio's home, not the local one
         path = STUDIO_HOME + path[1:]
     q = shlex.quote(path)
+    seam = min(seam, offset)
     return (
         f"cd {STUDIO_HOME} 2>/dev/null; f={q}; "
         'if [ ! -f "$f" ]; then echo NOFILE; exit 0; fi; '
         'a=$(readlink -f "$f"); w=0; '
         'for p in /proc/[0-9]*/fd/*; do [ "$(readlink "$p" 2>/dev/null)" = "$a" ] && { w=1; break; }; done; '
-        's=$(wc -c < "$f" | tr -d " "); echo "SIZE $s WRITER $w"; '
+        's=$(wc -c < "$f" | tr -d " "); i=$(ls -Ldi "$f" | awk \'{print $1}\'); '
+        'echo "SIZE $s WRITER $w INODE $i"; '
+        "printf 'SEAM '; "
+        f'if [ "$s" -ge {offset} ]; then tail -c +{offset - seam + 1} "$f" | head -c {seam} '
+        '| base64 | tr -d "\\n"; fi; '
+        "printf '\\nDATA '; "
         f'if [ "$s" -gt {offset} ]; then tail -c +{offset + 1} "$f" | head -c {STUDIO_READ_LIMIT} '
         '| base64 | tr -d "\\n"; fi'
     )
 
 
-def parse_studio_read(out: str) -> tuple[int, bool, bytes] | None:
-    m = re.search(r"^SIZE (\d+) WRITER ([01])$", out, re.M)
+def parse_studio_read(out: str) -> tuple[int, bool, str, bytes, bytes] | None:
+    """(size, writer, inode, seam, new bytes) from the read command's output; None if no log yet."""
+    m = re.search(r"^SIZE (\d+) WRITER ([01]) INODE (\S*)$", out, re.M)
     if not m:
         return None
-    b64 = out[m.end() :].strip()
-    return int(m.group(1)), m.group(2) == "1", base64.b64decode(b64) if b64 else b""
+    seam = re.search(r"^SEAM ?(\S*)$", out, re.M)
+    data = re.search(r"^DATA ?(\S*)$", out, re.M)
+    return (
+        int(m.group(1)),
+        m.group(2) == "1",
+        m.group(3),
+        base64.b64decode(seam.group(1)) if seam else b"",
+        base64.b64decode(data.group(1)) if data else b"",
+    )
 
 
 def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
@@ -366,6 +441,7 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
 
     studio = Studio(entry["studio"], teamspace=entry.get("teamspace") or args.teamspace, create_ok=False)
     tail, offset, first, failures = LogTail(), 0, True, 0
+    seam, inode = b"", None  # the last bytes read, and the log's inode: both change when it is replaced
     recent: list[str] = []  # last lines, to judge an exit that printed no PROGRESS_EXIT
     exited_at: float | None = None  # set once the process is gone; cleared by a relaunch
     down_since: float | None = None
@@ -386,7 +462,7 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
             status = str(studio.status)
             read = None
             if status == "Running":
-                out, _ = studio.run_with_exit_code(studio_read_command(entry["log"], offset))
+                out, _ = studio.run_with_exit_code(studio_read_command(entry["log"], offset, len(seam)))
                 read = parse_studio_read(out)
             failures = 0
         except Exception as ex:
@@ -408,14 +484,20 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
                 save(on_tick(state, "Pending", None, now))
             else:
                 down_since = None
-                size, writer, chunk = read
-                if size < offset:  # truncated or recreated: the agent relaunched into the same log
-                    tail, offset, recent = LogTail(), 0, []
+                size, writer, ino, their_seam, chunk = read
+                # truncated, recreated or overwritten: the agent relaunched into the same log
+                replaced = size < offset or their_seam != seam or (inode is not None and ino != inode)
+                if replaced and offset > 0:
+                    tail, offset, recent, seam, inode = LogTail(), 0, [], b"", None
                     new_attempt(now, "log restarted")
                     continue
+                inode = ino
                 offset += len(chunk)
+                seam = (seam + chunk)[-SEAM_BYTES:]
                 if chunk and exited_at is not None:
                     new_attempt(now, "log grew after exit")
+                if chunk:  # the log is read directly, so new bytes are the running attempt's
+                    open_attempt(state)
                 lines, partial = tail.feed(chunk)
                 events = on_tick(state, "Running", None, now)
                 exit_code = None

@@ -120,7 +120,9 @@ def new_state(run: str) -> dict[str, Any]:
         "last_error_at": None,
         "no_progress_warned": False,
         "cost": None,
-        "last_ts": {},
+        "attempt_ended": False,
+        "closed_attempt": None,
+        "last_seen": {},
         "updated_at": None,
     }
 
@@ -144,13 +146,16 @@ def recent_cause(s: dict[str, Any], since: float | None) -> str | None:
 
 
 def on_line(s: dict[str, Any], job: str, text: str, wall_now: float, dedupe: bool = True) -> list[dict[str, Any]]:
-    """Feed one log line. With `dedupe`, replayed history (a follow reconnect) is dropped by timestamp."""
+    """Feed one log line. With `dedupe`, replayed history (a follow reconnect) is dropped: lines
+    older than the last one seen, and lines already seen at that same timestamp."""
     ts, message = split_timestamp(text) if dedupe else (None, text)
     if ts is not None:
-        last = s["last_ts"].get(job)
-        if last is not None and ts <= last:
+        seen = s.setdefault("last_seen", {})
+        last, at_last = seen.get(job) or (None, [])
+        if last is not None and (ts < last or (ts == last and message in at_last)):
             return []
-        s["last_ts"][job] = ts
+        # lines often share a timestamp (a stage marker and its first reading), so keep them all
+        seen[job] = [ts, [*at_last, message][-200:] if ts == last else [message]]
     at = ts if ts is not None else wall_now
     err = parse_error(message)
     if err:
@@ -186,13 +191,27 @@ def close_stage(s: dict[str, Any], at: float) -> None:
 def end_attempt(s: dict[str, Any], at: float) -> None:
     """Close the attempt. Remember the stage it broke in: that stage is the only one a relaunch is
     compared with, since only there was ground lost. The attempt's last error moves aside, so it
-    explains the setback but is never blamed for anything the next attempt does."""
+    explains the setback but is never blamed for anything the next attempt does.
+
+    One failure is often reported twice (a platform retry both requeues the job and bumps its
+    attempt number), so a closed attempt stays closed until the workload runs again: the job goes
+    back to Running, or a Studio's log is replaced (`open_attempt`). Log lines don't reopen it,
+    since the failed attempt's last lines can arrive late."""
+    if s.get("attempt_ended"):
+        return
+    s["attempt_ended"] = True
+    s["closed_attempt"] = s.get("platform_attempt")
     s["fail_stage"] = s["stage"]
     close_stage(s, at)
     s["prev_error"] = s["last_error"]
     s["last_error"] = s["last_error_at"] = None
     s["attempt_no"] = s.get("attempt_no", 1) + 1
     s["attempt_fresh"] = True  # the next reading is compared with this attempt's
+
+
+def open_attempt(s: dict[str, Any]) -> None:
+    """The workload is running again, so the next failure ends a new attempt."""
+    s["attempt_ended"] = False
 
 
 def on_stage(
@@ -366,8 +385,10 @@ def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: f
     s["status"] = status
 
     if platform_attempt and s["platform_attempt"] and platform_attempt > s["platform_attempt"]:
-        s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
-        end_attempt(s, now)
+        # the attempt this number replaces may already be closed, by the requeue it came with
+        if s.get("closed_attempt") != s["platform_attempt"]:
+            s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
+            end_attempt(s, now)
         events.append(make_event("retry", run, f"platform retry: attempt {platform_attempt}", now))
     if platform_attempt:
         s["platform_attempt"] = platform_attempt
@@ -381,6 +402,8 @@ def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: f
         if s["phase"] not in ("waiting",):
             s["phase"] = "pending"
     elif status == "Running":
+        if prev != "Running":
+            open_attempt(s)
         s["pending_since"] = None
         s["started_at"] = s["started_at"] or now
         if prev != "Running" or not s["job_running_since"]:

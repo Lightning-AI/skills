@@ -284,6 +284,7 @@ class LiveRunFindings(unittest.TestCase):
             r.line(T0 + 1000 * attempt + 4, "PROGRESS 13/1319")
             r.line(T0 + 1000 * attempt + 5, "ValueError: bad checkpoint")
             tracker.end_attempt(r.s, T0 + 1000 * attempt + 10)  # each attempt crashed in eval
+            tracker.open_attempt(r.s)  # and was relaunched as a new job
         r.line(T0 + 3001, "PROGRESS_PHASE train")
         r.line(T0 + 3002, "PROGRESS 100/100")  # train starts fresh: it never broke
         r.line(T0 + 3003, "PROGRESS_PHASE eval")
@@ -657,6 +658,140 @@ class StudioMode(unittest.TestCase):
         self.assertIsNone(outcome)
         self.assertEqual(state["phase"], "pending")
         self.assertIn("waiting for", statusline.render_line(state, time.time()))
+
+
+class ReviewFindings(unittest.TestCase):
+    """Regressions from the review of the progress tools."""
+
+    def test_a_log_replaced_by_a_longer_one_is_a_new_attempt(self):
+        studio = StudioMode()
+        studio.setUp()
+        try:
+            outcome, _, events = studio.run_studio(
+                [
+                    studio.write("PROGRESS 10/100\n"),
+                    # relaunched into the same log, and grown past the old offset before the next read
+                    studio.write("PROGRESS 0/100\n" + "x" * 50 + "\nPROGRESS_EXIT 1\n", mode="w", writer=False),
+                    lambda: None,  # the re-read from the start
+                ]
+            )
+        finally:
+            studio.tearDown()
+        self.assertIsNone(outcome)  # not Completed: still waiting for a relaunch
+        self.assertIn("relaunch", [e["kind"] for e in events])
+        self.assertIn("exited (1)", next(e["msg"] for e in events if e["kind"] == core.ATTEMPT_FAILED))
+
+    def test_default_run_names_keep_workloads_apart(self):
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        job_a = {"kind": "job", "name": "train", "teamspace": "org/a"}
+        store.write_json(d / "runs" / "train.json", {"run": "train", "jobs": [job_a], "pid": os.getpid()})
+        store.write_json(d / "state" / "train.json", tracker.new_state("train"))
+        self.assertEqual(watch.default_run(d, "train", dict(job_a)), ("train", False))  # the same job, live
+        self.assertEqual(watch.default_run(d, "train", {**job_a, "teamspace": "org/b"}), ("train@org-b", True))
+        store.write_json(d / "state" / "train.json", {**tracker.new_state("train"), "phase": "done"})
+        store.write_json(d / "runs" / "train.json", {"run": "train", "jobs": [job_a], "pid": None})
+        self.assertEqual(watch.default_run(d, "train", dict(job_a)), ("train", True))  # finished: start over
+        s1 = {"kind": "studio", "name": "s1:train.log", "studio": "s1", "teamspace": None}
+        store.write_json(d / "runs" / "log.json", {"run": "log", "jobs": [s1], "pid": None})
+        s2 = {**s1, "name": "s2:train.log", "studio": "s2"}
+        self.assertEqual(watch.default_run(d, "log", s2), ("log@s2", True))
+
+    def test_the_resolved_teamspace_tells_workloads_apart(self):
+        ts = types.SimpleNamespace(name="a", id="ts-a", owner=types.SimpleNamespace(name="org"))
+        self.assertEqual(watch.teamspace_of(types.SimpleNamespace(teamspace=ts)), ("org/a", "ts-a"))
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        # both watched with the configured default teamspace, which changed in between
+        first = {"kind": "job", "name": "train", "teamspace": "org/a", "teamspace_id": "ts-a"}
+        store.write_json(d / "runs" / "train.json", {"run": "train", "jobs": [first], "pid": os.getpid()})
+        second = {**first, "teamspace": "org/b", "teamspace_id": "ts-b"}
+        self.assertEqual(watch.default_run(d, "train", second), ("train@org-b", True))
+        self.assertTrue(watch.same_workload(first, {**first, "teamspace": "renamed"}))  # the id decides
+
+    def test_one_platform_retry_closes_one_attempt(self):
+        def retried(ticks):
+            r = Run()
+            r.tick("Running", T0 + 1, attempt=1)
+            r.line(T0 + 2, "PROGRESS_PHASE train")
+            for i in range(9):
+                r.line(T0 + 10 + 10 * i, f"PROGRESS {10 * i}/100")
+            for step in ticks:
+                step(r)
+            r.tick("Running", T0 + 130, attempt=2)
+            r.line(T0 + 140, "PROGRESS_PHASE train")
+            r.line(T0 + 150, "PROGRESS 40/100")
+            self.assertEqual(r.s["attempt_no"], 2)
+            self.assertEqual(r.s["peak"], 80)
+            self.assertEqual([b["kind"] for b in r.s["setbacks"]], ["resume"])
+            return r
+
+        # requeued, then the failed attempt's last line arrives late, then the new attempt number
+        r = retried(
+            [
+                lambda r: r.tick("Pending", T0 + 100, attempt=1),
+                lambda r: r.line(T0 + 95, "RuntimeError: CUDA error: an illegal memory access"),
+                lambda r: r.tick("Pending", T0 + 110, attempt=2),
+            ]
+        )
+        self.assertIn("illegal memory access", r.s["setbacks"][0]["cause"])
+        # the new attempt number first, then the requeue
+        retried([lambda r: r.tick("Running", T0 + 100, attempt=2), lambda r: r.tick("Pending", T0 + 110, attempt=2)])
+        # both in one tick
+        retried([lambda r: r.tick("Pending", T0 + 100, attempt=2)])
+
+    def test_lines_sharing_a_timestamp_are_all_read_once(self):
+        r = Run()
+        r.line(T0 + 5, "PROGRESS_PHASE train")
+        r.line(T0 + 5, "PROGRESS 3/10")
+        r.line(T0 + 5, "PROGRESS_PHASE train")  # a reconnect replays both
+        r.line(T0 + 5, "PROGRESS 3/10")
+        self.assertEqual(r.s["step"], 3)
+        self.assertEqual(r.kinds().count("stage"), 1)
+
+    def test_monitors_miss_nothing_across_restarts(self):
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        env = {**os.environ, "TMPDIR": tempfile.mkdtemp(), "CLAUDE_CODE_SESSION_ID": "s1"}
+
+        def monitor():
+            return subprocess.Popen(
+                [sys.executable, str(ENTRY), "--dir", str(d), "events", "--run", "r"],
+                stdout=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+
+        def add(kind, msg):
+            store.append_events(d, [core.make_event(kind, "r", msg, T0)])
+
+        add("done", "done in 1m")  # an earlier run under the same name
+        add("watching", "watching r")
+        add("stall", "stalled 5m at 40%")  # before the first Monitor started
+        first = monitor()
+        try:
+            self.assertEqual(must(first.stdout).readline().strip(), "r: stalled 5m at 40%")
+            time.sleep(1)
+        finally:
+            first.kill()  # the Monitor's timeout
+            first.communicate()
+        add("setback", "setback: resumed at 30%")  # between Monitors
+        add("milestone", "40%")
+        add("done", "done in 9m")
+        out = subprocess.run(
+            [sys.executable, str(ENTRY), "--dir", str(d), "events", "--run", "r"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        ).stdout
+        self.assertEqual(out.splitlines(), ["r: setback: resumed at 30%", "r: done in 9m"])
+
+    def test_setting_up_the_status_line_again_keeps_theirs(self):
+        once = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
+        self.assertEqual(settings.statusline_snippet(once)["statusLine"]["command"], once)
+        plain = settings.statusline_snippet(None)["statusLine"]["command"]
+        self.assertEqual(settings.statusline_snippet(plain)["statusLine"]["command"], plain)
 
 
 class Finish(unittest.TestCase):

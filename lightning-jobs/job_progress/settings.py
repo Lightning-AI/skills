@@ -32,12 +32,34 @@ def statusline_setting(project_dir: str, user: bool = False) -> tuple[str | None
     return None, None
 
 
+FEED = 'printf %s "$in" | '
+CHAIN_HEAD = "in=$(cat); " + FEED
+
+
+def users_part(cmd: str) -> str | None:
+    """The user's own command out of one we set up earlier, or the whole command if not ours."""
+    if not is_ours(cmd):
+        return cmd
+    try:
+        parts = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(parts) == 3 and parts[:2] == ["sh", "-c"] and parts[2].startswith(CHAIN_HEAD):
+        body = parts[2][len(CHAIN_HEAD) :]
+        cut = body.rfind("; " + FEED)
+        if cut > 0:
+            return users_part(body[:cut])
+    return None
+
+
 def statusline_snippet(existing: str | None) -> dict[str, Any]:
     # the launcher lives in the state folder, so a custom folder needs no flag or env var
     ours = f"python3 {shlex.quote(os.path.abspath(progress_dir() / LAUNCHER))}"
-    if existing and not is_ours(existing):
-        # keep the user's own status line: feed the same input to both, theirs first
-        both = 'in=$(cat); printf %s "$in" | ' + existing + '; printf %s "$in" | ' + ours
+    theirs = users_part(existing) if existing else None
+    if theirs:
+        # keep the user's own status line, also when setting up again: feed the same input to
+        # both, theirs first
+        both = CHAIN_HEAD + theirs + "; " + FEED + ours
         ours = f"sh -c {shlex.quote(both)}"
     return {"statusLine": {"type": "command", "command": ours, "refreshInterval": 3}}
 
