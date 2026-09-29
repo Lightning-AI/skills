@@ -1,4 +1,4 @@
-# Authoring & managing Lightning AI skills
+# Contributing: authoring & managing Lightning AI skills
 
 How to add, update, and maintain the skills in this repo. Each skill teaches an
 AI coding agent how to drive one part of the Lightning AI platform, so the bar is:
@@ -135,8 +135,8 @@ Tips:
 the table in `README.md`. If it introduces a new capability worth calling out,
 mention it in the README intro too. Public skills also need their directory added
 to the `skills` array in `.claude-plugin/plugin.json`, or the Claude Code plugin
-won't ship them — the array is explicit precisely so internal skills
-(`lightning-blog`) stay out of it.
+won't ship them. Every skill here is public: internal-only skills live in a
+separate private repo, not this one.
 
 **Update:** edit the `SKILL.md`. Re-run the affected commands against a control
 plane before committing — the API may have changed under you. Keep the README row

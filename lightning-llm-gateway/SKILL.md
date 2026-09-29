@@ -1,6 +1,8 @@
 ---
 name: lightning-llm-gateway
 description: Call hosted LLMs (OpenAI GPT, Anthropic Claude, Google Gemini, open-weights models) through the Lightning AI models API / LLM gateway - chat, streaming, multi-turn conversations, images, and model metadata; plus the teamspace model checkpoint registry. Use when the user wants to run inference through lightning.ai, compare gateway models, or manage model artifacts on the platform.
+license: Apache-2.0
+compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
 
 # Lightning AI LLM Gateway (Models API)
