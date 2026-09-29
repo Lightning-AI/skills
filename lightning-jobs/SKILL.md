@@ -395,6 +395,17 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 
 ## Gotchas
 
+- **Disable inherited HTTP debug logging before collecting evidence:** run CLI/SDK commands with
+  `DEBUG=0 LIGHTNING_DEBUG=0`. With `DEBUG=1`, SDK HTTP diagnostics can print the `Authorization`
+  header, even on a config read. Do not publish those logs; if credentials were exposed, flag
+  rotation.
+- **A saved teamspace can belong to a different login.** If resolving it fails, compare
+  `lightning auth whoami` and `/v1/memberships` before selecting another organization. Preserve an explicitly
+  requested organization; a sole visible membership elsewhere is not a substitute. For a separate
+  browser login, unset `LIGHTNING_API_KEY`, `LIGHTNING_USER_ID` and `LIGHTNING_AUTH_TOKEN`, and set
+  `LIGHTNING_CREDENTIAL_PATH` to a new file in a private directory. `lightning login` otherwise
+  reuses the existing identity. Use that same environment on subsequent commands, verify membership,
+  and pass `--teamspace` explicitly.
 - Jobs bill machine time while allocated; always confirm with the user before launching on a GPU or with `num_machines` > 1 (see *Machines*), and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **`max_runtime` is not a time or spend cap.** It is a DWS reservation duration, applied only on non-spot machines that are `dws_supported`/`dws_only`, and a no-op elsewhere (verified inert on an L40S run). `job.wait(timeout=..., stop_on_timeout=True)` does stop a job, but only while the calling process survives. So don't promise an unattended bound on an ordinary machine: say what enforces it, and keep something alive to call `job.stop()`.

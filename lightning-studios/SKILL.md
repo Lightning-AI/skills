@@ -385,6 +385,17 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 
 ## Gotchas
 
+- **Disable inherited HTTP debug logging before collecting evidence:** run CLI/SDK commands with
+  `DEBUG=0 LIGHTNING_DEBUG=0`. With `DEBUG=1`, SDK HTTP diagnostics can print the `Authorization`
+  header, even on a config read. Do not publish those logs; if credentials were exposed, flag
+  rotation.
+- **A saved teamspace can belong to a different login.** If resolving it fails, compare
+  `lightning auth whoami` and `/v1/memberships` before selecting another organization. Preserve an explicitly
+  requested organization; a sole visible membership elsewhere is not a substitute. For a separate
+  browser login, unset `LIGHTNING_API_KEY`, `LIGHTNING_USER_ID` and `LIGHTNING_AUTH_TOKEN`, and set
+  `LIGHTNING_CREDENTIAL_PATH` to a new file in a private directory. `lightning login` otherwise
+  reuses the existing identity. Use that same environment on subsequent commands, verify membership,
+  and pass `--teamspace` explicitly.
 - **Stop Studios when done: attached compute bills, and GPUs cost more.**
 - **`start()` on a Studio already running on a different machine raises.** Use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.
