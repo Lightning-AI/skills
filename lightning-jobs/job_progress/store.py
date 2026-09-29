@@ -63,6 +63,11 @@ def session_dir() -> str:
     return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
+def session_id() -> str | None:
+    """The Claude Code session running this command; the status line shows only that session's runs."""
+    return os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+
+
 def write_json(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, indent=1))

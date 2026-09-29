@@ -436,7 +436,8 @@ final. State goes to `~/.local/state/lightning-progress/`, so it doesn't matter 
 `watch`, the Monitor or the status line runs in. Keep that default. If you do move it, with
 `--dir PATH` before the command or `LIGHTNING_PROGRESS_DIR`, use the same folder for `watch`,
 `events` and `statusline --config`. The status-line command points at a launcher inside that
-folder, since the status line doesn't inherit the session's environment.
+folder, since the status line doesn't inherit the session's environment. Each session's status
+line shows only the runs that session's `watch` started, so other sessions stay clear.
 
 **Work running in a Studio** has no job log stream, so point `watch` at the log file instead.
 Start the process so its last line records the exit code, then watch that file. Paths are

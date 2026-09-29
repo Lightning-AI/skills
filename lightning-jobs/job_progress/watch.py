@@ -27,6 +27,7 @@ from .store import (
     progress_dir,
     read_json,
     session_dir,
+    session_id,
     write_json,
 )
 from .tracker import (
@@ -158,6 +159,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if args.note:
         runfile["notes"].append({"at": time.time(), "job": name, "note": args.note})
     runfile["abandoned"] = False
+    runfile["session"] = session_id() or runfile.get("session")
 
     if pid_alive(runfile.get("pid")) and runfile.get("pid") != os.getpid():
         write_json(run_path, runfile)

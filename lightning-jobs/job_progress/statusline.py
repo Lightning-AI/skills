@@ -165,14 +165,29 @@ def render_line(s: dict[str, Any], now: float) -> str:
     return line
 
 
-def shown(d: Path, s: dict[str, Any], now: float) -> bool:
-    """Finished runs linger for a while. So do orphans, runs whose poller died before they
-    finished: flagged as stale at first, then dropped, since nothing will ever finish them."""
+def shown(d: Path, s: dict[str, Any], now: float, session: str | None = None) -> bool:
+    """Only the asking session's runs, plus runs started outside Claude Code. Finished runs
+    linger for a while. So do orphans, runs whose poller died before they finished: flagged as
+    stale at first, then dropped, since nothing will ever finish them."""
+    runfile = read_json(d / "runs" / f"{s['run']}.json") or {}
+    if session and runfile.get("session") not in (None, session):
+        return False
     if s["phase"] in FINAL_PHASES:
         return now - (s.get("finished_at") or 0) < FINAL_VISIBLE_FOR
     if now - (s.get("updated_at") or 0) < FINAL_VISIBLE_FOR:
         return True
-    return pid_alive((read_json(d / "runs" / f"{s['run']}.json") or {}).get("pid"))
+    return pid_alive(runfile.get("pid"))
+
+
+def asking_session() -> str | None:
+    """The session_id in the JSON Claude Code sends the status line on stdin, if any."""
+    if sys.stdin.isatty():
+        return None
+    try:
+        info = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return None
+    return info.get("session_id") if isinstance(info, dict) else None
 
 
 def print_config(user: bool, project_dir: str | None) -> int:
@@ -216,12 +231,11 @@ def print_config(user: bool, project_dir: str | None) -> int:
 def cmd_statusline(args: argparse.Namespace) -> int:
     if args.config:
         return print_config(args.user, args.project_dir)
-    if not sys.stdin.isatty():
-        sys.stdin.read()  # Claude Code sends session JSON; the bars don't depend on it
+    session = asking_session()
     d = progress_dir()
     now = time.time()
     states = [s for s in (read_json(p) for p in sorted((d / "state").glob("*.json"))) if s]
-    visible = [s for s in states if shown(d, s, now)]
+    visible = [s for s in states if shown(d, s, now, session)]
     visible.sort(key=lambda s: (s["phase"] in FINAL_PHASES, -(s.get("updated_at") or 0)))
     rows: list[str] = []
     for i, s in enumerate(visible[:5]):

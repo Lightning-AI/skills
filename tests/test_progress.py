@@ -511,6 +511,30 @@ class Locations(unittest.TestCase):
         store.write_json(d / "runs" / "r1.json", {"run": "r1", "pid": os.getpid()})
         self.assertTrue(statusline.shown(d, s, T0 + 3600))  # a live poller keeps it
 
+    def test_statusline_shows_only_its_own_sessions_runs(self):
+        d = tempfile.mkdtemp()
+        store.ensure_dirs(Path(d))
+        for run, session in (("mine", "s1"), ("theirs", "s2"), ("outside", None)):
+            s = tracker.new_state(run)
+            s.update(phase="running", step=5, total=10, peak=5, updated_at=time.time())
+            store.write_json(Path(d) / "state" / f"{run}.json", s)
+            store.write_json(Path(d) / "runs" / f"{run}.json", {"run": run, "pid": None, "session": session})
+
+        def line(stdin: str) -> str:
+            return subprocess.run(
+                [sys.executable, str(ENTRY), "statusline"],
+                env=dict(os.environ, LIGHTNING_PROGRESS_DIR=d),
+                input=stdin,
+                capture_output=True,
+                text=True,
+            ).stdout
+
+        out = line('{"session_id": "s1"}')
+        self.assertIn("mine", out)
+        self.assertIn("outside", out)  # started outside Claude Code: no owner, shown everywhere
+        self.assertNotIn("theirs", out)
+        self.assertIn("theirs", line(""))  # no session to go by: show everything
+
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
         r.line(T0 + 1, "PROGRESS_PHASE setup")
