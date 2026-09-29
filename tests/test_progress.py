@@ -847,6 +847,70 @@ class ReviewFindings(unittest.TestCase):
         plain = settings.statusline_snippet(None)["statusLine"]["command"]
         self.assertEqual(settings.statusline_snippet(plain)["statusLine"]["command"], plain)
 
+    def test_an_exit_followed_by_more_output_is_not_the_end(self):
+        studio = StudioMode()
+        studio.setUp()
+        try:
+            # one read holds an attempt's exit and a relaunch appended after it
+            outcome, state, events = studio.run_studio(
+                [studio.write("PROGRESS 50/100\nPROGRESS_EXIT 0\nPROGRESS 10/100\n")]
+            )
+            self.assertIsNone(outcome)  # not Completed: the relaunch is still writing
+            self.assertIn("log grew after exit (0)", next(e["msg"] for e in events if e["kind"] == "relaunch"))
+            self.assertEqual((state["step"], state["attempt_no"]), (10, 2))
+            self.assertEqual(state["setbacks"][-1]["kind"], "resume")
+            outcome, _, events = studio.run_studio(
+                [studio.write("PROGRESS 50/100\nPROGRESS_EXIT 1\n 5%|█   | 5/100", mode="w")]
+            )
+            self.assertIsNone(outcome)
+            self.assertNotIn(core.ATTEMPT_FAILED, [e["kind"] for e in events])  # already relaunched
+        finally:
+            studio.tearDown()
+
+    def test_a_follower_let_go_of_writes_nothing(self):
+        release = threading.Event()
+
+        class FakeJob:
+            statuses: ClassVar[list] = ["Running", "Failed"]
+            current_run_attempt, total_cost = None, 0.0
+
+            def __init__(self, name, teamspace=None):
+                pass
+
+            @property
+            def status(self):
+                return FakeJob.statuses.pop(0) if len(FakeJob.statuses) > 1 else FakeJob.statuses[0]
+
+            def logs(self, follow, timestamps, query=None):
+                release.wait(10)  # a stream that outlives the drain timeout
+                yield f"{ts(T0 + 5)} PROGRESS 10/100"
+
+        fake_sdk = types.ModuleType("lightning_sdk")
+        fake_sdk.__dict__["Job"] = FakeJob
+        state, lock = tracker.new_state("train"), threading.Lock()
+        sink = watch.make_sink(state, lock, lambda evs: None)
+        args = types.SimpleNamespace(teamspace=None, query=None)
+        with (
+            mock.patch.dict(sys.modules, {"lightning_sdk": fake_sdk}),
+            mock.patch.multiple(watch, SUPERVISE_INTERVAL=0, DRAIN_TIMEOUT=-1),
+        ):
+            before = set(threading.enumerate())
+            outcome = watch.supervise(
+                {"name": "old"}, state, lock, lambda evs: None, sink, Path(tempfile.mkdtemp()) / "none.json", 0, args
+            )
+            old = [t for t in threading.enumerate() if isinstance(t, watch.Follower) and t not in before]
+            self.assertEqual(outcome, "Failed")
+            sink("new", f"{ts(T0 + 1)} PROGRESS 50/100")  # the relaunched job
+            release.set()  # then the old stream delivers a late line
+            for t in old:
+                t.join(10)
+        self.assertEqual(len(old), 1)
+        self.assertEqual(state["step"], 50)
+        self.assertEqual(state["setbacks"], [])
+        # and a line already on its way when the follower was let go of is dropped too
+        sink("old", f"{ts(T0 + 6)} PROGRESS 10/100", old[0])
+        self.assertEqual(state["step"], 50)
+
 
 class Finish(unittest.TestCase):
     def test_done_summary(self):

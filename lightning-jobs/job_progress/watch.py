@@ -51,6 +51,7 @@ STUDIO_INTERVAL = 10.0
 STUDIO_READ_LIMIT = 4_000_000
 SEAM_BYTES = 1024
 COST_INTERVAL = 30.0
+DRAIN_TIMEOUT = 30.0  # how long a finished job's follower gets to read its last lines
 
 
 def cli_python() -> str | None:
@@ -115,7 +116,7 @@ class Follower(threading.Thread):
             for line in job.logs(follow=True, timestamps=True, query=self.query):
                 if self.abandoned:
                     return
-                self.sink(self.name_, line)
+                self.sink(self.name_, line, self)
         except Exception as ex:  # a dropped stream is restarted by the supervisor
             self.error = f"{type(ex).__name__}: {ex}"
 
@@ -248,12 +249,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         for e in events:
             print(e["msg"], flush=True)
 
-    def sink(job_name: str, line: str) -> None:
-        with lock:
-            events = on_line(state, job_name, line, time.time())
-            if events or time.time() - (state["updated_at"] or 0) > 1:
-                save(events)
-
+    sink = make_sink(state, lock, save)
     idx = next(i for i, j in enumerate(runfile["jobs"]) if same_workload(j, entry))
     while True:
         runfile = read_json(run_path) or runfile
@@ -337,6 +333,21 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_sink(state: dict[str, Any], lock: threading.Lock, save):
+    """The callback log lines reach the state through. It drops lines from a follower that was let
+    go of, so a stream that ends late can't write into the attempt that came after it."""
+
+    def sink(job_name: str, line: str, follower: Follower | None = None) -> None:
+        with lock:
+            if follower is not None and follower.abandoned:
+                return
+            events = on_line(state, job_name, line, time.time())
+            if events or time.time() - (state["updated_at"] or 0) > 1:
+                save(events)
+
+    return sink
+
+
 def supervise(entry, state, lock, save, sink, run_path, idx, args) -> str:
     """Poll one job's status every few seconds and keep a log follower attached while it runs."""
     from lightning_sdk import Job
@@ -344,50 +355,54 @@ def supervise(entry, state, lock, save, sink, run_path, idx, args) -> str:
     job = Job(entry["name"], teamspace=entry.get("teamspace") or args.teamspace)
     follower: Follower | None = None
     last_cost, terminal_since, failures = 0.0, None, 0
-    while True:
-        now = time.time()
-        try:
-            status = str(job.status)
-            attempt = job.current_run_attempt
-            if now - last_cost > COST_INTERVAL:
-                last_cost = now
-                cost = job.total_cost
-            else:
-                cost = None
-            failures = 0
-        except Exception as ex:
-            failures += 1
-            if failures >= 12:
-                raise
-            print(f"status check failed ({failures}): {ex}", file=sys.stderr, flush=True)
+    try:
+        while True:
+            now = time.time()
+            try:
+                status = str(job.status)
+                attempt = job.current_run_attempt
+                if now - last_cost > COST_INTERVAL:
+                    last_cost = now
+                    cost = job.total_cost
+                else:
+                    cost = None
+                failures = 0
+            except Exception as ex:
+                failures += 1
+                if failures >= 12:
+                    raise
+                print(f"status check failed ({failures}): {ex}", file=sys.stderr, flush=True)
+                time.sleep(SUPERVISE_INTERVAL)
+                continue
+
+            with lock:
+                if cost is not None:
+                    state["cost"] = cost
+                save(on_tick(state, status, attempt, now))
+
+            runfile = read_json(run_path) or {}
+            if len(runfile.get("jobs", [])) > idx + 1:  # the session handed this run a newer job
+                return "superseded"
+
+            if status == "Running" and (follower is None or not follower.is_alive()):
+                if follower and follower.error:
+                    print(f"log stream dropped, reattaching: {follower.error}", file=sys.stderr, flush=True)
+                follower = Follower(entry["name"], entry.get("teamspace") or args.teamspace, args.query, sink)
+                follower.start()
+
+            if status in TERMINAL_STATUSES:
+                terminal_since = terminal_since or now
+                # let the follower drain the last lines (its stream ends once the job is finished)
+                if follower is None or not follower.is_alive() or now - terminal_since > DRAIN_TIMEOUT:
+                    if follower is None:
+                        drain_saved_logs(entry, args, sink)
+                    return status
             time.sleep(SUPERVISE_INTERVAL)
-            continue
-
-        with lock:
-            if cost is not None:
-                state["cost"] = cost
-            save(on_tick(state, status, attempt, now))
-
-        runfile = read_json(run_path) or {}
-        if len(runfile.get("jobs", [])) > idx + 1:  # the session handed this run a newer job
-            if follower:
+    finally:
+        # a follower that outlives this attempt, e.g. past the drain timeout, must not write into the next one
+        if follower is not None:
+            with lock:
                 follower.abandoned = True
-            return "superseded"
-
-        if status == "Running" and (follower is None or not follower.is_alive()):
-            if follower and follower.error:
-                print(f"log stream dropped, reattaching: {follower.error}", file=sys.stderr, flush=True)
-            follower = Follower(entry["name"], entry.get("teamspace") or args.teamspace, args.query, sink)
-            follower.start()
-
-        if status in TERMINAL_STATUSES:
-            terminal_since = terminal_since or now
-            # let the follower drain the last lines (its stream ends once the job is finished)
-            if follower is None or not follower.is_alive() or now - terminal_since > 30:
-                if follower is None:
-                    drain_saved_logs(entry, args, sink)
-                return status
-        time.sleep(SUPERVISE_INTERVAL)
 
 
 def studio_read_command(path: str, offset: int, seam: int = 0) -> str:
@@ -443,18 +458,28 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
     tail, offset, first, failures = LogTail(), 0, True, 0
     seam, inode = b"", None  # the last bytes read, and the log's inode: both change when it is replaced
     recent: list[str] = []  # last lines, to judge an exit that printed no PROGRESS_EXIT
-    exited_at: float | None = None  # set once the process is gone; cleared by a relaunch
+    exit_code: int | None = None  # the attempt's exit, until a relaunch writes after it
+    exited_at: float | None = None  # when a failed exit was reported; cleared by a relaunch
     down_since: float | None = None
     name = entry["name"]
 
-    def new_attempt(now: float, why: str) -> None:
-        nonlocal exited_at
-        exited_at = None
+    def new_attempt(now: float, why: str) -> dict[str, Any]:
+        nonlocal exit_code, exited_at, recent
+        exit_code = exited_at = None
+        recent = []
         state["issue_since"] = state["issue_since"] or state["last_sample_at"] or now
         state["job_running_since"] = None
         state["phase"] = "pending"
         end_attempt(state, now)
-        save([make_event("relaunch", state["run"], f"{why}: new attempt", now)])
+        return make_event("relaunch", state["run"], f"{why}: new attempt", now)
+
+    def relaunched_after_exit(text: str, now: float) -> list[dict[str, Any]]:
+        """Output after an exit is a relaunch appended to the log, in the same read or a later one."""
+        if exit_code is None or not text.strip():
+            return []
+        event = new_attempt(now, f"log grew after exit ({exit_code})")
+        open_attempt(state)
+        return [event]
 
     while True:
         now = time.time()
@@ -488,32 +513,31 @@ def supervise_studio(entry, state, lock, save, run_path, idx, args) -> str:
                 # truncated, recreated or overwritten: the agent relaunched into the same log
                 replaced = size < offset or their_seam != seam or (inode is not None and ino != inode)
                 if replaced and offset > 0:
-                    tail, offset, recent, seam, inode = LogTail(), 0, [], b"", None
-                    new_attempt(now, "log restarted")
+                    tail, offset, seam, inode = LogTail(), 0, b"", None
+                    save([new_attempt(now, "log restarted")])
                     continue
                 inode = ino
                 offset += len(chunk)
                 seam = (seam + chunk)[-SEAM_BYTES:]
-                if chunk and exited_at is not None:
-                    new_attempt(now, "log grew after exit")
                 if chunk:  # the log is read directly, so new bytes are the running attempt's
                     open_attempt(state)
                 lines, partial = tail.feed(chunk)
                 events = on_tick(state, "Running", None, now)
-                exit_code = None
-                for line in lines:
+                for line in lines:  # in order: an exit only counts if nothing follows it
+                    events += relaunched_after_exit(line, now)
                     events += on_line(state, name, line, now, dedupe=False)
                     m = EXIT_RE.search(line)
                     if m:
                         exit_code = int(m.group(1))
-                recent = (recent + lines)[-20:]
+                    recent = [*recent, line][-20:]
+                events += relaunched_after_exit(partial, now)
                 events += on_partial(state, partial, now)
                 if first:  # the history read at attach time: don't replay every old milestone
                     events = [e for e in events if e["kind"] not in ("milestone", "stage")]
                     first = False
                 save(events)
 
-                if exit_code is None and not writer and exited_at is None and offset == size:
+                if exit_code is None and not writer and offset == size:
                     failed = any(parse_error(ln) or "Traceback" in ln for ln in recent)
                     exit_code = 1 if failed else 0
                 if exit_code == 0:
