@@ -57,6 +57,24 @@ def parse(line: bytes) -> dict[str, Any] | None:
     return e if isinstance(e, dict) else None
 
 
+def latest_watch(f: Any, run: str | None) -> int:
+    """Offset of the run's latest `watching` event: where its current poller started. A run name
+    can be reused, so an end before it belongs to an earlier run and doesn't end this Monitor."""
+    latest = -1
+    if run:
+        f.seek(0)
+        while True:
+            at = f.tell()
+            line = f.readline()
+            if not line:
+                break
+            e = parse(line)
+            if e and e.get("run") == run and e.get("kind") == "watching":
+                latest = at
+        f.seek(0)
+    return latest
+
+
 def start_offset(f: Any, run: str | None) -> int:
     """For a Monitor with no cursor: where the run's latest poller started, so nothing it
     reported is missed. Failing that, the end of the log, passing on the hints before it, which
@@ -92,6 +110,7 @@ def cmd_events(args: argparse.Namespace) -> int:
     with open(path, "rb") as f:
         size = os.fstat(f.fileno()).st_size
         saved = read_cursor(cursor)
+        current = latest_watch(f, args.run)
         if args.from_start or not existed:
             pass  # a file that appeared after this Monitor started holds only new events
         elif saved is not None and saved <= size:
@@ -117,6 +136,10 @@ def cmd_events(args: argparse.Namespace) -> int:
             e = parse(line)
             if e is None or not wanted(e, args.run, args.all):
                 continue
-            print(e["msg"], flush=True)
             if args.run and e.get("kind") in FINAL_PHASES:
+                if at < current:
+                    print(f"{e['msg']} (an earlier run under this name)", flush=True)
+                    continue
+                print(e["msg"], flush=True)
                 return 0
+            print(e["msg"], flush=True)

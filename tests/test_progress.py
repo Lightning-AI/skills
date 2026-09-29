@@ -787,6 +787,60 @@ class ReviewFindings(unittest.TestCase):
         ).stdout
         self.assertEqual(out.splitlines(), ["r: setback: resumed at 30%", "r: done in 9m"])
 
+    def test_a_monitor_outlives_an_earlier_run_under_the_same_name(self):
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        env = {**os.environ, "TMPDIR": tempfile.mkdtemp(), "CLAUDE_CODE_SESSION_ID": "s1"}
+        cmd = [sys.executable, str(ENTRY), "--dir", str(d), "events", "--run", "r"]
+
+        def add(kind, msg):
+            store.append_events(d, [core.make_event(kind, "r", msg, T0)])
+
+        add("watching", "watching old")
+        first = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env=env)
+        time.sleep(1)
+        first.kill()  # the Monitor's timeout, before the old run ends
+        first.communicate()
+        add("done", "done in 1m")  # the old run ends
+        add("watching", "watching new")  # a new run under the same name
+        add("stall", "stalled 5m at 40%")
+        store.write_json(d / "state" / "r.json", {**tracker.new_state("r"), "phase": "stalled"})
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env=env)
+        try:
+            out = must(proc.stdout)
+            self.assertEqual(out.readline().strip(), "r: done in 1m (an earlier run under this name)")
+            self.assertEqual(out.readline().strip(), "r: stalled 5m at 40%")
+            time.sleep(0.5)
+            self.assertIsNone(proc.poll())  # still watching the new run
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_retries_seen_only_as_new_attempt_numbers_all_count(self):
+        r = Run()
+        r.tick("Running", T0 + 1, attempt=1)
+        r.line(T0 + 2, "PROGRESS_PHASE train")
+        r.line(T0 + 10, "PROGRESS 50/100")
+        r.tick("Running", T0 + 20, attempt=2)  # each poll missed the Pending in between
+        r.line(T0 + 30, "PROGRESS_PHASE train")
+        r.line(T0 + 40, "PROGRESS 40/100")
+        r.tick("Running", T0 + 50, attempt=3)
+        r.line(T0 + 60, "PROGRESS_PHASE train")
+        r.line(T0 + 70, "PROGRESS 30/100")
+        self.assertEqual(r.s["attempt_no"], 3)
+        self.assertEqual([st["attempt"] for st in r.s["stages"]], [1, 2, 3])
+        self.assertEqual(len(r.s["setbacks"]), 2)
+
+    def test_a_requeued_attempt_that_runs_again_can_fail_again(self):
+        r = Run()
+        r.tick("Running", T0 + 1, attempt=1)
+        r.line(T0 + 10, "PROGRESS 50/100")
+        r.tick("Pending", T0 + 20, attempt=1)  # requeued
+        r.tick("Running", T0 + 30, attempt=1)  # runs again under the same number
+        r.line(T0 + 40, "PROGRESS 45/100")
+        r.tick("Running", T0 + 50, attempt=2)  # then retried
+        self.assertEqual(r.s["attempt_no"], 3)
+
     def test_setting_up_the_status_line_again_keeps_theirs(self):
         once = settings.statusline_snippet("echo theirs")["statusLine"]["command"]
         self.assertEqual(settings.statusline_snippet(once)["statusLine"]["command"], once)

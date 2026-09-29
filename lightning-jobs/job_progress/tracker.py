@@ -122,6 +122,7 @@ def new_state(run: str) -> dict[str, Any]:
         "cost": None,
         "attempt_ended": False,
         "closed_attempt": None,
+        "attempt_confirmed": True,
         "last_seen": {},
         "updated_at": None,
     }
@@ -212,6 +213,7 @@ def end_attempt(s: dict[str, Any], at: float) -> None:
 def open_attempt(s: dict[str, Any]) -> None:
     """The workload is running again, so the next failure ends a new attempt."""
     s["attempt_ended"] = False
+    s["closed_attempt"] = None  # a requeued attempt can run again under the same number
 
 
 def on_stage(
@@ -384,19 +386,25 @@ def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: f
     run, prev = s["run"], s["status"]
     s["status"] = status
 
-    if platform_attempt and s["platform_attempt"] and platform_attempt > s["platform_attempt"]:
+    bumped = bool(platform_attempt and s["platform_attempt"] and platform_attempt > s["platform_attempt"])
+    if bumped:
         # the attempt this number replaces may already be closed, by the requeue it came with
         if s.get("closed_attempt") != s["platform_attempt"]:
             s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
             end_attempt(s, now)
+        # a new number is a new attempt, whatever status this poll happened to see; until a later
+        # poll sees it running, a requeue is the same retry, not another failure
+        open_attempt(s)
+        s["attempt_confirmed"] = False
         events.append(make_event("retry", run, f"platform retry: attempt {platform_attempt}", now))
     if platform_attempt:
         s["platform_attempt"] = platform_attempt
 
     if status == "Pending":
         if prev == "Running":
-            s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
-            end_attempt(s, now)
+            if s.get("attempt_confirmed", True):
+                s["issue_since"] = s["issue_since"] or s["last_sample_at"] or now
+                end_attempt(s, now)
             events.append(make_event("requeued", run, "back to Pending (requeued or retried)", now))
         s["pending_since"] = s["pending_since"] or now
         if s["phase"] not in ("waiting",):
@@ -404,6 +412,8 @@ def on_tick(s: dict[str, Any], status: str, platform_attempt: int | None, now: f
     elif status == "Running":
         if prev != "Running":
             open_attempt(s)
+        if not bumped:
+            s["attempt_confirmed"] = True
         s["pending_since"] = None
         s["started_at"] = s["started_at"] or now
         if prev != "Running" or not s["job_running_since"]:
