@@ -10,6 +10,7 @@ write and test a skill itself is in [AUTHORING.md](AUTHORING.md).
 | Path | What it is |
 |---|---|
 | `lightning-*/SKILL.md` | the skills |
+| `lightning-*/references/` | detail a skill links to, loaded only when needed |
 | `lightning-jobs/progress.py`, `lightning-jobs/job_progress/` | live job progress: poller, Monitor feed, status line |
 | `lightning-blog/md2blocks.py` | Markdown to blog blocks |
 | `examples/` | end-to-end tasks for trying the skills; each declares its own dependencies |
