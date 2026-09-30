@@ -536,6 +536,39 @@ class Locations(unittest.TestCase):
         self.assertNotIn("theirs", out)
         self.assertIn("theirs", line(""))  # no session to go by: show everything
 
+    def test_parallel_runs_keep_their_places_as_pollers_write(self):
+        d = tempfile.mkdtemp()
+        store.ensure_dirs(Path(d))
+
+        def write(run, started, updated, phase="running", finished=None):
+            s = tracker.new_state(run)
+            s.update(
+                phase=phase, step=5, total=10, peak=5, started_at=started, updated_at=updated, finished_at=finished
+            )
+            store.write_json(Path(d) / "state" / f"{run}.json", s)
+
+        def order() -> list[str]:
+            out = subprocess.run(
+                [sys.executable, str(ENTRY), "statusline"],
+                env=dict(os.environ, LIGHTNING_PROGRESS_DIR=d),
+                input="",
+                capture_output=True,
+                text=True,
+            ).stdout
+            names = ("trainA", "evals", "trainB", "old")
+            return [n for line in out.splitlines() for n in names if f" {n} " in f"{line} "]
+
+        now = time.time()
+        write("trainA", now - 900, now)
+        write("evals", now - 800, now)
+        write("trainB", now - 700, now)
+        write("old", now - 2000, now, phase="done", finished=now - 30)
+        first = order()
+        self.assertEqual(first, ["trainA", "evals", "trainB", "old"])  # live by start time, finished last
+        for run, started in (("trainB", now - 700), ("evals", now - 800), ("trainA", now - 900)):
+            write(run, started, time.time())  # each poller writes in turn, as they do every few seconds
+            self.assertEqual(order(), first)
+
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
         r.line(T0 + 1, "PROGRESS_PHASE setup")
