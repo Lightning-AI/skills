@@ -225,30 +225,25 @@ Printing log lines from a wait loop, or asking the user to `tail -f` a file, doe
 `progress.py` ships with the `lightning-jobs` skill, which is installed next to this one (by the
 plugin and by `npx skills add`). `<LIGHTNING_JOBS_SKILL_DIR>` is the base directory Claude Code gave
 for `lightning-jobs` if it's loaded, or else `<THIS_SKILL_DIR>/../lightning-jobs`. Check that
-`<LIGHTNING_JOBS_SKILL_DIR>/progress.py` exists.
+`<LIGHTNING_JOBS_SKILL_DIR>/progress.py` exists, then follow that skill's
+[*Live progress, ETA and setbacks*](../lightning-jobs/SKILL.md#live-progress-eta-and-setbacks)
+section: the `PROGRESS` line format, the Monitor on `events`, and the status-line offer.
+Only the launch and the `watch` command differ on a Studio.
 
-1. **Make the run print progress**: `PROGRESS <step>/<total>` from rank 0, as soon as the total is
-   known and then every step or few. Mark stages with `PROGRESS_PHASE <name> <i>/<n>` when the run
-   does more than train.
-2. **End the log with the exit code**, so a crash is told apart from success:
-   `nohup sh -c 'python train.py > train.log 2>&1; echo PROGRESS_EXIT $? >> train.log' </dev/null >/dev/null 2>&1`.
-3. **Start the watcher right after detaching**, as a background Bash command **outside the agent
-   sandbox** (the SDK can't reach lightning.ai inside it). Paths are relative to the Studio's home.
-   Note the run name it prints first.
+**Launch on the Studio** (e.g. through `studio.run_and_detach`) from the script's folder,
+unbuffered (`-u`) so `PROGRESS` lines reach the log while the run is going, and end the log with
+`PROGRESS_EXIT` so a crash is told apart from success:
 
-   ```bash
-   python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
-   ```
+```bash
+cd ~/src && nohup sh -c 'python -u train.py > train.log 2>&1; echo PROGRESS_EXIT $? >> train.log' </dev/null >/dev/null 2>&1
+```
 
-4. **Watch events** with a Monitor running `python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py events --run <RUN>`,
-   and report each event when it arrives.
-5. **Offer the status-line bar once**, as its own ask-user question, if `watch` says it isn't set
-   up (`progress.py statusline --config ...`).
+**Watch from your machine**, as a background command outside the agent sandbox. `--log` is
+relative to the Studio's home, so `src/train.log` is the file the launch writes:
 
-Steps 4 and 5 follow the `lightning-jobs` skill's *Live progress, ETA and setbacks* section; read
-it for the Monitor and status-line details. The watcher reads new log lines every 10 s.
-Relaunching into the same log (overwritten or appended) counts as the run's next attempt, so a
-crash and retry shows up as a setback rather than a fresh start.
+```bash
+python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
+```
 
 **If `progress.py` isn't there**, `lightning-jobs` isn't installed. Tell the user once that
 installing it adds the live bar. Until then, every few minutes, report the last `PROGRESS` line
@@ -380,7 +375,7 @@ try:                                                          # any failure from
     wait_ready(studio)                                        # a new machine: wait until it can run commands
     # the exit code goes to train.exit for this loop and to the log for progress.py;
     # clear the last run's before launching
-    bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; c=$?; echo PROGRESS_EXIT $c >> train.log; echo $c > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
+    bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python -u train.py > train.log 2>&1; c=$?; echo PROGRESS_EXIT $c >> train.log; echo $c > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
     print(run_if_up(studio, "tail -n 40 ~/src/train.log")[0])          # within the first minute: crashes show up in seconds
     # now start the watcher (*Live progress for detached runs*); this loop only guards the deadline
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
@@ -445,9 +440,6 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
   A poller with no deadline, one that only matches progress lines, or one that can't reach
   lightning.ai (a sandboxed background command) stays quiet through a crash. Give it a deadline,
   match `Traceback`/`Error`/`Killed`/`CUDA out of memory` too, and check it prints its first line.
-- **`PROGRESS` lines without a running `progress.py watch` show the user nothing.** Writing the
-  line format is only half the job: start the watcher (*Live progress for detached runs*) for
-  every detached run, whichever script launched it.
 - **A non-interactive `lightning studio delete` without `-y` deletes nothing.** It prints
   `Are you sure you want to delete? [y/N]: Aborted.` and exits, leaving the studio (and its
   billing) alive. Confirm with the user first, then pass `-y`/`--yes`.
