@@ -116,6 +116,7 @@ lightning deployment delete my-api --teamspace owner/teamspace --yes
 
 - **Pick the auth flag from `lightning auth whoami`: `--api-key-auth` for `user` callers, `--token-auth` for `scoped-api-key` callers.** `--api-key-auth` only accepts a Lightning *user* key (it serializes to `userApiKey: true`). A scoped-key caller gets **401 on every request** while replicas run and seconds are billed. Use `--token-auth <token>` when a scoped key, CI job or agent will call the endpoint. Use `--api-key-auth` when humans with their own Lightning logins will.
 - **`--interruptible` is not reliably cheaper, so check the price before you pass it.** On some SKUs and clouds spot costs more than on-demand, and nothing warns you at create time. Fetch both rates from the accelerator catalog (see the `lightning-cost-estimation` skill) and take `min(cost, spotPrice)`.
+- **To run a shell command line, pass `--entrypoint "bash -c"` and put the whole line in `--command`.** With a shell entrypoint (`bash -c`, `sh -c`) the command is passed as one string, so `&&`, `;`, pipes and `$VARS` work. With any other entrypoint the command is split into arguments.
 - **Changing image, command, env, entrypoint, path mappings, health check, cloud account, spot, quantity or max runtime creates a new release; switching the machine alone does not.** The CLI adds a rolling update automatically. The SDK raises `RuntimeError` if the deployment has no release strategy, neither passed nor already stored.
 
 ## Python SDK
@@ -152,6 +153,43 @@ dep.stop()                                      # scales to 0; blocks until repl
 HuggingFace model serving via SDK: `dep.start(model="meta-llama/...", machine=Machine.L40S, ports=[8000], hf_token_secret="...")`. `image`/`studio` must be None; still pass `ports`.
 
 **`dep.delete()` does NOT delete the deployment.** Like `dep.get()`/`dep.post()`, it is an HTTP helper: it sends an HTTP `DELETE` request to the deployed service's endpoint. To delete the deployment resource use `lightning deployment delete NAME --yes` or the raw API.
+
+### Storage: teamspace drives and path mappings
+
+**Every deployment container sees the teamspace's data connections without any flag.** Each one
+appears under `/teamspace/<kind>/<connection-name>`: Lightning storage drives under
+`/teamspace/lightning_storage/`, S3 connections under `/teamspace/s3_connections/`, and so on.
+For model weights on a drive, point the server at that path.
+
+To mount a connection, or a folder inside it, at a path of your choosing, add a path mapping.
+The format is `<CONTAINER_PATH>:<CONNECTION_NAME>[:<PATH_IN_CONNECTION>]`, and the flag is
+repeatable:
+
+```bash
+lightning deployment create my-api --teamspace owner/teamspace ... \
+  --path-mapping /data:my-s3-connection:train     # /data shows my-s3-connection/train
+```
+```python
+dep.start(..., path_mappings={"/data": "my-s3-connection:train"})
+```
+
+List the connection names with
+`lightning api "/v1/projects/${PROJECT_ID}/data-connections" | jq -r '.dataConnections[].name'`.
+
+### Images from the teamspace container registry
+
+Push a local image to the teamspace's registry, then deploy it by the name the upload prints:
+
+```bash
+lightning container upload my-server --tag v1 --teamspace owner/teamspace   # needs the local Docker daemon
+lightning container list --teamspace owner/teamspace
+lightning deployment create my-api --teamspace owner/teamspace \
+  --image litcr.io/lit-container/<owner>/<teamspace>/my-server:v1 ...
+```
+
+The registry path is `litcr.io/lit-container/<owner>/<teamspace>/<local image basename>:<tag>`.
+Deployments in the same teamspace pull it with no registry secret, so the `image_secret_ref` patch
+below is not needed for these images. Re-pushing a changed image uploads only the changed layers.
 
 ### Private container images
 
@@ -251,4 +289,13 @@ lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X DELET
 - **`total_cost` in `deployment inspect` stays `0.0` for the deployment's whole life, so measure spend from the teamspace credit balance.** Unlike jobs, no billing/usage endpoint resolves deployment cost either. Difference the credit balance before and after. That field flips between full float precision and 2-decimal rounding between consecutive calls, so use a window long enough that the rounding is noise.
 - **`--dry-run` never calls the server, so it never shows the unacknowledged-warnings error.** A real `--model` create can fail with `Deployment has unacknowledged warnings: ... Re-run with --ack <code> (repeatable) or --force.` The dry run only echoes the model spec you set (`served_model_name`, `weight_source` and any vLLM flags you passed), not the machine, image variant or replica config.
 - **An opaque `403` on `--model` means the feature is gated on your account; fall back to `--image`.** The error is `Exception: The jobs_service_create_deployment_with_http_info request failed to reach the server, response: 403.` with no server message, and `LIGHTNING_DEBUG=1` adds a traceback but still no reason. It is an entitlement, not a bad argument, so don't debug the model id or flags. Deploy a vLLM container image directly (`--image`), which needs no entitlement.
+- **A replica that fails straight after `Image downloaded` with `[ERROR]: server reported an error` never started its container.** `lightning deployment inspect` then shows `An error occurred while creating the machine`, and the deployment keeps spawning replacement replicas that fail the same way, billing while it does. It is a spec problem, not capacity, so scale to zero first. Two causes have been seen on `lightning-baremetal`:
+  - **An image referenced by digest** (`repo@sha256:…`). Use a tag instead: `lmsysorg/sglang:v0.5.20` started where its own digest failed.
+  - **A path mapping to a Lightning storage (VAST) drive.** Drop the mapping and read the auto-mounted `/teamspace/lightning_storage/<drive>/…` path instead. The same mapping to an S3 connection works on `lightning-public-prod`.
+- **Deployment containers share the host's network, so every port the app binds must be free on the host, not just `--port`.** A sidecar or metrics listener on a port the host already uses crashes at start with `Address already in use (os error 98)`, and the replica restarts in a loop. `9090` is taken on `lightning-baremetal` hosts. Bind internal-only listeners to `127.0.0.1` on an unusual port.
+- **`update(path_mappings={})` in the SDK does not remove existing path mappings.** An empty dict counts as "no change". To clear them, fetch the deployment, set `spec.pathMappings` to `[]` and `PUT` it back:
+  ```bash
+  lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" | jq '.spec.pathMappings = []' > dep.json
+  lightning api "/v1/projects/${PROJECT_ID}/deployments/${DEPLOYMENT_ID}" -X PUT --input dep.json
+  ```
 - **Passing both `teamspace="owner/teamspace"` and `org=`/`user=` raises `ValueError`.** `org=`/`user=` alone emits a `DeprecationWarning`. On SDKs older than 2026.7.31 the combined form failed with "Teamspace owner/name does not exist"; upgrade rather than splitting it.
