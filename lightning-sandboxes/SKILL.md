@@ -10,6 +10,7 @@ A Sandbox is a fast-booting isolated VM for code execution. It is ephemeral by d
 ## Setup & auth (sandbox-specific)
 
 ```bash
+export DEBUG=0 LIGHTNING_DEBUG=0   # an inherited DEBUG=1 logs the Authorization header; set this in every new shell
 # Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
 v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
 [ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \

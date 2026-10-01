@@ -10,6 +10,7 @@ A Job runs a command on a dedicated cloud machine and terminates when done. Two 
 ## Setup & auth
 
 ```bash
+export DEBUG=0 LIGHTNING_DEBUG=0   # an inherited DEBUG=1 logs the Authorization header; set this in every new shell
 # Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
 v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
 [ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
@@ -96,6 +97,21 @@ else
   lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
 fi
 ```
+
+**Signed in as the wrong account.** A saved teamspace can belong to a different login, and
+`lightning login` reuses the current identity. To sign in separately, give the new login its own
+credentials file and no inherited key, then check who you are and what you can see:
+
+```bash
+D=$(mktemp -d "${TMPDIR:-/tmp}/lightning-login.XXXXXX") && chmod 700 "$D" && echo "env file: $D/env"
+printf '%s\n' 'unset LIGHTNING_API_KEY LIGHTNING_USER_ID LIGHTNING_AUTH_TOKEN' \
+  "export LIGHTNING_CREDENTIAL_PATH='$D/credentials.json' DEBUG=0 LIGHTNING_DEBUG=0" > "$D/env"
+. "$D/env" && lightning login && lightning auth whoami \
+  && lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
+```
+
+Shell variables don't carry over between agent commands, so start every later command with
+`. "$D/env" &&` (the path printed above) and pass `--teamspace` explicitly.
 
 ## CLI reference
 
@@ -395,17 +411,14 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 
 ## Gotchas
 
-- **Disable inherited HTTP debug logging before collecting evidence:** run CLI/SDK commands with
-  `DEBUG=0 LIGHTNING_DEBUG=0`. With `DEBUG=1`, SDK HTTP diagnostics can print the `Authorization`
-  header, even on a config read. Do not publish those logs; if credentials were exposed, flag
-  rotation.
+- **Inherited `DEBUG=1` leaks credentials.** SDK HTTP diagnostics then print the
+  `Authorization` header, even on a config read, which is why the setup block sets
+  `DEBUG=0 LIGHTNING_DEBUG=0`. Never publish such logs; if a key was printed, tell the user to
+  rotate it (avatar → **Global Settings → Keys**).
 - **A saved teamspace can belong to a different login.** If resolving it fails, compare
-  `lightning auth whoami` and `/v1/memberships` before selecting another organization. Preserve an explicitly
-  requested organization; a sole visible membership elsewhere is not a substitute. For a separate
-  browser login, unset `LIGHTNING_API_KEY`, `LIGHTNING_USER_ID` and `LIGHTNING_AUTH_TOKEN`, and set
-  `LIGHTNING_CREDENTIAL_PATH` to a new file in a private directory. `lightning login` otherwise
-  reuses the existing identity. Use that same environment on subsequent commands, verify membership,
-  and pass `--teamspace` explicitly.
+  `lightning auth whoami` with `lightning api /v1/memberships`, and never switch organizations on
+  your own: a sole membership elsewhere doesn't replace the one requested. See *Signed in as the
+  wrong account*.
 - Jobs bill machine time while allocated; always confirm with the user before launching on a GPU or with `num_machines` > 1 (see *Machines*), and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **`max_runtime` is not a time or spend cap.** It is a DWS reservation duration, applied only on non-spot machines that are `dws_supported`/`dws_only`, and a no-op elsewhere (verified inert on an L40S run). `job.wait(timeout=..., stop_on_timeout=True)` does stop a job, but only while the calling process survives. So don't promise an unattended bound on an ordinary machine: say what enforces it, and keep something alive to call `job.stop()`.
