@@ -384,6 +384,18 @@ class LiveRunFindings(unittest.TestCase):
         out = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env).stdout
         self.assertIn("r1", out)
 
+    def test_taking_over_the_status_line_from_another_copy_is_reported(self):
+        d = Path(tempfile.mkdtemp())
+        self.assertIsNone(store.replaced_entry(d))  # nothing set up yet
+        store.install_launcher(d)
+        self.assertIsNone(store.replaced_entry(d))  # already this copy
+        other = Path(tempfile.mkdtemp()) / "progress.py"
+        other.write_text("")
+        (d / store.ENTRY_FILE).write_text(f"{other}\n")
+        self.assertEqual(store.replaced_entry(d), str(other))  # another checkout's copy
+        (d / store.ENTRY_FILE).write_text("/plugins/cache/lightning/0.9.0/lightning-jobs/progress.py\n")
+        self.assertIsNone(store.replaced_entry(d))  # a removed plugin version: nothing to report
+
     def test_the_launcher_stays_quiet_when_the_plugin_version_is_gone(self):
         d = Path(tempfile.mkdtemp())
         launcher = store.install_launcher(d)

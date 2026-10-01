@@ -48,6 +48,24 @@ runpy.run_path(entry, run_name="__main__")
 '''
 
 
+def replaced_entry(d: Path) -> str | None:
+    """The other progress.py the status line runs now, if this copy is about to replace it.
+
+    Every `watch` points the launcher at its own copy, so the last one started draws every bar.
+    That is how a plugin update takes over, but a watcher started from an older checkout also
+    silently takes over from a newer one.
+    """
+    try:
+        current = (d / ENTRY_FILE).read_text().strip()
+    except OSError:
+        return None
+    if not current or not os.path.isfile(current):
+        return None
+    if os.path.realpath(current) == os.path.realpath(ENTRY_SCRIPT):
+        return None
+    return current
+
+
 def install_launcher(d: Path) -> Path:
     """Write the launcher and point it at this copy of progress.py; returns the launcher's path."""
     d.mkdir(parents=True, exist_ok=True)
