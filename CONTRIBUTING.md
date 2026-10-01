@@ -32,6 +32,10 @@ Only `name` and `description` are required. `name` must match the directory name
 Keep a skill self-contained in its `SKILL.md` — no extra files unless a skill
 genuinely needs a script or template asset.
 
+When writing or reviewing a skill, follow the Agent Skills
+[best practices for skill creation](https://agentskills.io/skill-creation/best-practices).
+The house style below adds the rules specific to the Lightning skills.
+
 ### Writing the `description`
 
 The description is the **only thing an agent sees when deciding whether to load
