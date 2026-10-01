@@ -12,6 +12,7 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ## Setup & auth
 
 ```bash
+export DEBUG=0 LIGHTNING_DEBUG=0   # an inherited DEBUG=1 logs the Authorization header; set this in every new shell
 # Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
 v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
 [ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
@@ -76,6 +77,21 @@ else
   lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
 fi
 ```
+
+**Signed in as the wrong account.** A saved teamspace can belong to a different login, and
+`lightning login` reuses the current identity. To sign in separately, give the new login its own
+credentials file and no inherited key, then check who you are and what you can see:
+
+```bash
+D=$(mktemp -d "${TMPDIR:-/tmp}/lightning-login.XXXXXX") && chmod 700 "$D" && echo "env file: $D/env"
+printf '%s\n' 'unset LIGHTNING_API_KEY LIGHTNING_USER_ID LIGHTNING_AUTH_TOKEN' \
+  "export LIGHTNING_CREDENTIAL_PATH='$D/credentials.json' DEBUG=0 LIGHTNING_DEBUG=0" > "$D/env"
+. "$D/env" && lightning login && lightning auth whoami \
+  && lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
+```
+
+Shell variables don't carry over between agent commands, so start every later command with
+`. "$D/env" &&` (the path printed above) and pass `--teamspace` explicitly.
 
 ## CLI reference
 
@@ -412,6 +428,14 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 
 ## Gotchas
 
+- **Inherited `DEBUG=1` leaks credentials.** SDK HTTP diagnostics then print the
+  `Authorization` header, even on a config read, which is why the setup block sets
+  `DEBUG=0 LIGHTNING_DEBUG=0`. Never publish such logs; if a key was printed, tell the user to
+  rotate it (avatar → **Global Settings → Keys**).
+- **A saved teamspace can belong to a different login.** If resolving it fails, compare
+  `lightning auth whoami` with `lightning api /v1/memberships`, and never switch organizations on
+  your own: a sole membership elsewhere doesn't replace the one requested. See *Signed in as the
+  wrong account*.
 - **Stop Studios when done: attached compute bills, and GPUs cost more.**
 - **`start()` on a Studio already running on a different machine raises.** Use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.

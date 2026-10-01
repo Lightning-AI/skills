@@ -2,14 +2,15 @@
 
 Start with a ready-made training script and one chat message. Claude Code prices the run, launches
 it on an H200, and comes back with how well a 4B base model picks and fills in tool calls, before
-and after training. The GPU part takes about 6 minutes and costs under $1. From message to results
-usually takes 10–15 minutes, depending mostly on how long the cloud machine takes to get ready.
+and after training. One reference run took about 6 minutes on the GPU. Allow additional time for
+sign-in, machine startup, dependency installation and downloading the results. The 15-minute
+deadline and $5 budget below are limits for the agent to monitor, not guaranteed turnaround or cost.
 
 ```mermaid
 flowchart LR
     A[Your chat message] --> B[Claude Code + Lightning skills]
     B --> C[Set up · price the run]
-    C --> D[H200 job: score → train → score]
+    C --> D[H200: score → train → score]
     D --> E[Scores + adapter back to you]
 ```
 
@@ -19,7 +20,8 @@ flowchart LR
 calls: `[{"name": "get_weather", "arguments": {"city": "Paris"}}, ...]`. It scores 300 held-out
 requests, trains a LoRA adapter (a small set of extra weights) for 3 minutes on
 [function-calling examples](https://huggingface.co/datasets/argilla/apigen-function-calling), then
-scores the same 300 again. Your laptop can't run this: it needs a GPU with 80 GB of memory.
+scores the same 300 again. The default run targets a GPU with at least 80 GB of memory;
+the CPU smoke test below checks the pipeline with a smaller model.
 
 ## The message you'll send
 
@@ -77,9 +79,13 @@ Run finetune_eval.py on a GPU with at least 80 GB of memory (an H200 is ideal). 
 | **valid** | well-formed JSON calls to tools that exist | 99.7% | 100% |
 
 Measured on one H200 from a fresh start: 5.8 minutes in total, 151 training steps, 64 GB peak
-memory. Your numbers will differ by a point or two.
+memory. These are reference results, not results from your run. Scores and runtime can change
+with package versions, model or dataset updates, training steps and random initialization.
 
-`metrics.json` contains all the scores, the training loss, the time taken and the GPU used.
+`metrics.json` contains the scores, training loss, GPU used and script runtime. Its
+`total_seconds` starts after Python imports, so it excludes dependency installation, cloud
+provisioning and downloading the outputs. Record those separately when checking the deadline
+and cost. Record the actual package versions and script commit alongside the results.
 `samples.jsonl` holds 20 replies from each model for a side-by-side read, and `adapter/` is the
 trained LoRA. **exact** is the headline: a call with one wrong argument would fail in a real app.
 
@@ -90,11 +96,15 @@ trained LoRA. **exact** is the headline: a call with one wrong argument would fa
   start a new session, because plugins load at session start.
 - **Sign-in didn't happen (Path A).** Run `! lightning login` in Claude Code yourself, or export
   `LIGHTNING_USER_ID` and `LIGHTNING_API_KEY` (see Path B, step 3) before starting `claude`.
-- **"Connection refused", "403" or "host not allowed" (Path B).** `lightning.ai` isn't on the
-  environment's network list. Changes to network access and variables apply only to **new**
-  sessions.
-- **The job sits in "Pending".** You aren't billed while the job waits for a machine. If no H200
-  frees up, an H100 or A100 (80 GB) works too; tell Claude to switch.
+- **"Connection refused" or "host not allowed" (Path B).** Check the environment's network
+  allowlist. Changes to network access and variables apply only to **new** sessions. A **403**
+  can also mean the authenticated account lacks access: check `lightning auth whoami` and
+  `lightning api /v1/memberships` before changing network settings. A saved teamspace name does
+  not grant access to it.
+- **The job sits in "Pending".** Queue time before allocation is free, but provisioning and
+  image downloads can also report Pending and are billed. Keep the deadline monitor running.
+  If capacity is unavailable, check the price and wait for an H100 or A100 with 80 GB before
+  switching, and stop the original run before launching another.
 - **The job fails while installing packages or reports an old CUDA driver.** The script's header
   pins the PyTorch build (CUDA 12.8). Ask Claude to read the job logs and adjust that pin.
 - **Log says `flash-linear-attention missing`.** Training still works but runs about 2× slower.
@@ -102,3 +112,5 @@ trained LoRA. **exact** is the headline: a call with one wrong argument would fa
   above that line.
 - **You want to test the plumbing without a GPU.** Run
   `uv run finetune_eval.py --smoke`, which uses a 0.8B model and a few steps on CPU.
+  This still downloads model weights and runs generation: it is not a quick dependency check.
+  On CPU without optimized linear-attention kernels, evaluation can take more than ten minutes.
