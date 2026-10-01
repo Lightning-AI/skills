@@ -2,3 +2,14 @@
 
 # run outputs from examples (metrics, samples, adapters)
 examples/*/outputs/
+
+# python bytecode (tests and the progress tools write it next to the source)
+__pycache__/
+
+# local environments and editor/OS clutter
+.venv/
+.vscode/
+.DS_Store
+
+# stray patch files from git format-patch
+*.patch

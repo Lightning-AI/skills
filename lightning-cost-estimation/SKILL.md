@@ -1,6 +1,8 @@
 ---
 name: lightning-cost-estimation
 description: Estimate and compare what a workload costs on Lightning AI - fetch live per-hour GPU/CPU machine prices from the accelerator catalog for every cloud (Lightning Cloud, AWS, GCP, Lambda Labs, Nebius, Voltage Park), size hardware for a model, then quote a training run, fine-tune, serving deployment or data-prep job over hours to months, including spot rates, multi-node fan-out and Drive storage. Use when the user asks "how much would it cost to train/serve X", "what's the price of an H100/B200 on lightning", "how much for 32 8xH100 nodes for 2 weeks", "which cloud is cheapest for this", "what will my monthly bill be", or wants hardware sized for a model before pricing it.
+license: Apache-2.0
+compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
 
 # Lightning AI cost estimation

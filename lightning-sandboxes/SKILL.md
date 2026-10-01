@@ -1,6 +1,8 @@
 ---
 name: lightning-sandboxes
 description: Run code in Lightning AI Sandboxes - fast, isolated ephemeral VMs with optional persistence, snapshots, custom images, Docker-in-sandbox (docker / docker compose), network egress policies, file I/O, public port URLs, and interactive PTY sessions. Use when the user wants to execute untrusted or experimental code safely, needs a throwaway cloud VM, wants to build/run containers or preview a containerized app, or asks about lightning.ai sandboxes or snapshots.
+license: Apache-2.0
+compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
 
 # Lightning AI Sandboxes

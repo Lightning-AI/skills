@@ -1,6 +1,8 @@
 ---
 name: lightning-deployments
 description: Deploy and operate services on Lightning AI - run Docker containers or HuggingFace models (vLLM) behind autoscaled HTTPS endpoints, manage replicas, releases, endpoint auth, and logs. Use when the user wants to deploy an API, model server, or container to lightning.ai, or manage an existing deployment.
+license: Apache-2.0
+compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
 
 # Lightning AI Deployments

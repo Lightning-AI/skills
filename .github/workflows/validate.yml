@@ -1,0 +1,36 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  skills:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install skills-ref
+        run: pip install "git+https://github.com/agentskills/agentskills.git#subdirectory=skills-ref"
+      - name: Validate every skill against the Agent Skills spec
+        run: |
+          for d in lightning-*/; do
+            skills-ref validate "$d"
+          done
+      - name: Check plugin.json, skill folders and README agree
+        run: python scripts/check_consistency.py
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate the plugin and marketplace manifests
+        run: claude plugin validate . --strict
