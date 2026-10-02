@@ -225,7 +225,9 @@ Printing log lines from a wait loop, or asking the user to `tail -f` a file, doe
 `progress.py` ships with the `lightning-jobs` skill, which is installed next to this one (by the
 plugin and by `npx skills add`). `<LIGHTNING_JOBS_SKILL_DIR>` is the base directory Claude Code gave
 for `lightning-jobs` if it's loaded, or else `<THIS_SKILL_DIR>/../lightning-jobs`. Check that
-`<LIGHTNING_JOBS_SKILL_DIR>/progress.py` exists, then follow that skill's
+`<LIGHTNING_JOBS_SKILL_DIR>/progress.py` exists and use that copy. Don't search the disk for
+another `progress.py`: other checkouts can be older, and the last watcher started decides
+which copy draws every bar. Then follow that skill's
 [*Live progress, ETA and setbacks*](../lightning-jobs/SKILL.md#live-progress-eta-and-setbacks)
 section: the `PROGRESS` line format, the Monitor on `events`, and the status-line offer.
 Only the launch and the `watch` command differ on a Studio.

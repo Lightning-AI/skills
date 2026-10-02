@@ -373,7 +373,9 @@ finish and what a failure cost. The platform reports only a job's status, so the
 own progress and `progress.py`, next to this file, turns it into a status-line bar and chat
 events. [references/progress.md](references/progress.md) has the details of every step: the
 line formats, Studio logs, the bar's layout and how setbacks are classified. `<SKILL_DIR>` is
-this skill's directory, the base directory Claude Code gave when it loaded the skill.
+this skill's directory, the base directory Claude Code gave when it loaded the skill. Use the
+`progress.py` there; don't search the disk for another copy, which can be older and then draws
+every bar.
 
 ```
 job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)

@@ -27,6 +27,7 @@ from .store import (
     pid_alive,
     progress_dir,
     read_json,
+    replaced_entry,
     session_dir,
     session_id,
     write_json,
@@ -188,6 +189,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
     teamspace, teamspace_id = preflight(args.job, args.studio, args.teamspace)
     d = progress_dir()
     ensure_dirs(d)
+    replaced = replaced_entry(d)
     install_launcher(d)  # keeps a registered status line on this, the newest, copy of the script
     if args.studio:
         name, base = f"{args.studio}:{args.log}", Path(args.log).stem
@@ -239,6 +241,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
     if hint:
         append_events(d, [make_event("hint", run, hint, time.time())])
         print(f"{run}: {hint}", flush=True)
+    if replaced:
+        msg = (
+            f"the status line now runs {ENTRY_SCRIPT} instead of {replaced}. If that one is the copy "
+            "you meant to use, restart this watcher from it"
+        )
+        append_events(d, [make_event("hint", run, f"{run}: {msg}", time.time())])
+        print(f"{run}: {msg}", flush=True)
 
     lock = threading.Lock()
 
