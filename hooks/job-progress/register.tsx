@@ -1,0 +1,323 @@
+// Live job progress inside Claude Code: the bars above the prompt, a tool that starts the poller
+// outside the sandbox, and a message to Claude for each event that needs a reply. It reads the
+// files lightning-jobs/progress.py writes (see that skill's "Live progress" section), so it works
+// beside the status line and the Monitor, and with any poller that writes the same files.
+
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { Watcher } from '../../types'
+import { FINAL_VISIBLE_FOR, isFinal, renderAll, type RunState } from './render'
+
+const rows = atom({ plugin: 'lightning', key: 'rows' } as const, [])
+const watchers = atom({ plugin: 'lightning', key: 'watchers' } as const, {})
+
+const TOOL = 'watch_job'
+const REFRESH_MS = 2000
+const BATCH_MS = 1500
+const RELAUNCH_WAIT = '1800'
+const PYTHONS = [['python3'], ['python'], ['py', '-3']]
+// skills whose jobs and Studio runs report progress through progress.py
+const PROGRESS_SKILLS = /(^|:)lightning-(jobs|studios)$/
+const HINT = 'status-line bar is not set up'
+// progress the bars already show (job_progress/events.py ROUTINE_KINDS)
+const ROUTINE_KINDS = ['milestone', 'stage', 'started', 'recovered', 'watching']
+
+type RunFile = { session?: string | null }
+
+/** The skill text's addendum: the mod does steps 2-4 of the skill's "Live progress" workflow. */
+export function skillNote(hasBar: boolean): string {
+  return [
+    '',
+    '## Live progress in this session',
+    '',
+    "The lightning plugin's job-progress mod is loaded, so the live-progress workflow is shorter:",
+    '',
+    `- **Start the poller with the \`mcp__lightning__${TOOL}\` tool**, not Bash: it takes the same`,
+    '  arguments as `progress.py watch` and runs it outside the sandbox, so there is nothing to approve.',
+    '- **Skip the Monitor and the status-line offer.** The mod sends you a message for each event that',
+    '  needs a reply (stalls, setbacks, failures, relaunches, the final state); act on those.',
+    hasBar
+      ? '- **The bars show above the prompt**, so there is no need to repeat routine progress.'
+      : '- **Nothing draws a bar here**, so the mod also sends routine progress: report it in a line.',
+    '',
+  ].join('\n')
+}
+
+/** `watch_job`'s input as `progress.py watch` arguments. */
+export function watchArgs(input: Record<string, unknown>): string[] {
+  const str = (k: string) => (typeof input[k] === 'string' && input[k] !== '' ? (input[k] as string) : undefined)
+  const args = str('job') ? [str('job')!] : []
+  for (const k of ['studio', 'log', 'run', 'teamspace', 'note', 'query']) {
+    const v = str(k)
+    if (v) args.push(`--${k}`, v)
+  }
+  return [...args, '--relaunch-wait', RELAUNCH_WAIT]
+}
+
+/** Lines of a child's stdout, from the pieces it arrives in. */
+async function* lines(stream: AsyncIterable<{ stream: string; text: string }>): AsyncGenerator<string> {
+  let buf = ''
+  for await (const { stream: which, text } of stream) {
+    if (which !== 'stdout') continue
+    buf += text
+    let i: number
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim()
+      buf = buf.slice(i + 1)
+      if (line) yield line
+    }
+  }
+  if (buf.trim()) yield buf.trim()
+}
+
+// children and timers die with the module, so these start over on a reload too
+const feeds = new Set<string>()
+const pending: string[] = []
+let python: string[] | null = null
+let sdkWatch: boolean | null = null
+// an SDK watcher between its start and its first line, when refresh can't yet tell its run is fed
+let sdkStarting = 0
+let isFlushing = false
+
+async function stateDir($: EngineInterface): Promise<string> {
+  const own = await $.env.get('LIGHTNING_PROGRESS_DIR')
+  if (own) return own
+  const xdg = await $.env.get('XDG_STATE_HOME')
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
+  return `${xdg || `${home}/.local/state`}/lightning-progress`
+}
+
+async function canDraw($: EngineInterface): Promise<boolean> {
+  return (await $.session.surfaces()).some(s => s === 'terminal' || s === 'desktop')
+}
+
+/** The first Python on PATH; progress.py finds the SDK's own interpreter itself. */
+async function pythonCmd($: EngineInterface): Promise<string[]> {
+  if (python) return python
+  for (const cmd of PYTHONS) {
+    try {
+      const { exitCode } = await $.process.run([...cmd, '--version'], { timeoutMs: 10_000 })
+      if (exitCode === 0) return (python = cmd)
+    } catch {
+      // not installed under this name
+    }
+  }
+  throw new Error('no Python found (tried python3, python, py -3)')
+}
+
+async function progressCmd($: EngineInterface, args: string[]): Promise<{ argv: string[]; env: Record<string, string> }> {
+  const script = `${$.plugin.root}/lightning-jobs/progress.py`
+  // tags the run with this session, so the status line and the feed keep to it
+  return { argv: [...(await pythonCmd($)), script, ...args], env: { CLAUDE_CODE_SESSION_ID: await $.session.id() } }
+}
+
+/** Lines from the feeds go to Claude together, as one message, once they stop coming. */
+function tell($: EngineInterface, line: string): void {
+  pending.push(line)
+  if (isFlushing) return
+  isFlushing = true
+  $.clock.after(BATCH_MS, async () => {
+    isFlushing = false
+    const batch = pending.splice(0)
+    if (!batch.length) return
+    await $.prompt.submit({ text: ['Lightning job progress:', ...batch.map(l => `- ${l}`)].join('\n') })
+  })
+}
+
+/** `progress.py events --run RUN`: the Monitor's feed, with its cursor, read by the mod. */
+function startFeed($: EngineInterface, run: string): void {
+  feeds.add(run)
+  void (async () => {
+    try {
+      const all = !(await canDraw($))
+      const { argv, env } = await progressCmd($, ['events', '--run', run, ...(all ? ['--all'] : [])])
+      for await (const line of lines($.process.spawn({ argv, env }))) {
+        if (!line.includes(HINT)) tell($, line)
+      }
+    } catch (err) {
+      $.ui.log(`${run}: event feed stopped: ${String(err)}`, { to: 'debug' })
+    } finally {
+      feeds.delete(run)
+    }
+  })()
+}
+
+/** Whether the installed `lightning` CLI has `job watch`, which writes the same files. */
+async function hasSdkWatch($: EngineInterface): Promise<boolean> {
+  if (sdkWatch !== null) return sdkWatch
+  try {
+    sdkWatch = (await $.process.run(['lightning', 'job', 'watch', '--help'], { timeoutMs: 20_000 })).exitCode === 0
+  } catch {
+    sdkWatch = false
+  }
+  return sdkWatch
+}
+
+type WatchEvent = { kind?: string; run?: string; msg?: string }
+
+/** The SDK's `--json` lines: events, plus state snapshots the mod reads from the files anyway. */
+export function parseWatchLine(line: string): WatchEvent | null {
+  try {
+    const e = JSON.parse(line) as unknown
+    return e && typeof e === 'object' ? (e as WatchEvent) : null
+  } catch {
+    return null
+  }
+}
+
+/** Which events Claude hears about: those `progress.py events` passes on, or all where no bar shows. */
+export function isWanted(kind: string | undefined, hasBar: boolean): boolean {
+  if (!kind || kind === 'state' || kind === 'hint') return false
+  return !hasBar || !ROUTINE_KINDS.includes(kind)
+}
+
+/** Starts the poller for the session's life; resolves with what it said first. Jobs go to
+ * `lightning job watch --json` where the CLI has it, whose events the mod reads straight off its
+ * output; Studio logs, and older CLIs, to `progress.py watch`, with `progress.py events` as the feed. */
+function startWatch($: EngineInterface, args: string[]): Promise<string> {
+  return new Promise(resolve => {
+    void (async () => {
+      let first: string | null = null
+      let run: string | null = null
+      let isCounted = false
+      const settle = () => {
+        if (isCounted) sdkStarting -= 1
+        isCounted = false
+      }
+      const isJob = !args.includes('--studio')
+      try {
+        const viaSdk = isJob && (await hasSdkWatch($))
+        const hasBar = await canDraw($)
+        const env = { CLAUDE_CODE_SESSION_ID: await $.session.id() }
+        const argv = viaSdk ? ['lightning', 'job', 'watch', ...args, '--json'] : (await progressCmd($, ['watch', ...args])).argv
+        if (viaSdk) {
+          sdkStarting += 1
+          isCounted = true
+        }
+        const child = $.process.spawn({ argv, env })
+        for await (const line of lines(child)) {
+          const e = viaSdk ? parseWatchLine(line) : null
+          if (first === null) {
+            settle()
+            first = viaSdk ? (e?.msg ?? line) : line
+            resolve(first)
+            run = viaSdk ? (e?.kind === 'watching' ? (e.run ?? null) : null) : (/^run (\S+): watching/.exec(line)?.[1] ?? null)
+            if (run) {
+              // this child is the run's feed; restarted after a reload, it carries on as the same run
+              if (viaSdk) feeds.add(run)
+              const again = args.includes('--run') ? args : [...args, '--run', run]
+              await update($, watchers, w => ({ ...w, [run!]: { args: again } }))
+            }
+            continue
+          }
+          if (e?.msg && isWanted(e.kind, hasBar)) tell($, e.msg)
+        }
+        const { code } = await child.result
+        if (first === null) resolve(`the poller exited with code ${code} before it started; check its arguments`)
+      } catch (err) {
+        resolve(`could not start the poller: ${String(err)}`)
+      } finally {
+        settle()
+        if (run) {
+          feeds.delete(run)
+          await update($, watchers, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
+        }
+      }
+    })()
+  })
+}
+
+async function refresh($: EngineInterface): Promise<void> {
+  const dir = await stateDir($)
+  const nowMs = await $.clock.now()
+  const session = await $.session.id()
+  let entries: Awaited<ReturnType<EngineInterface['fs']['list']>> = []
+  try {
+    entries = await $.fs.list(`${dir}/state`)
+  } catch {
+    // no poller has run on this machine yet
+  }
+  const states: RunState[] = []
+  for (const f of entries) {
+    if (f.kind !== 'file' || !f.name.endsWith('.json') || nowMs - f.mtimeMs > FINAL_VISIBLE_FOR * 1000) continue
+    try {
+      const s = JSON.parse(await $.fs.read(`${dir}/state/${f.name}`)) as RunState
+      const runfile = JSON.parse(await $.fs.read(`${dir}/runs/${s.run}.json`).catch(() => '{}')) as RunFile
+      // this session's runs, plus runs started outside Claude Code, as the status line shows
+      if (runfile.session && runfile.session !== session) continue
+      states.push(s)
+      if (runfile.session === session && !isFinal(s) && !feeds.has(s.run) && !sdkStarting) startFeed($, s.run)
+    } catch {
+      // a state file mid-write; the next tick reads it
+    }
+  }
+  const next = renderAll(states, nowMs / 1000)
+  const current = await read($, rows)
+  if (JSON.stringify(next) !== JSON.stringify(current)) await update($, rows, () => next)
+}
+
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    await $.tool.register({
+      name: TOOL,
+      description:
+        'Start the lightning-jobs live-progress poller (`lightning job watch`, or `progress.py watch` where the ' +
+        'CLI lacks it) for a Lightning job, or for a ' +
+        'log file in a Studio, outside the agent sandbox. The progress bars then show above the prompt and ' +
+        'you get a message for each event that needs a reply. Returns the run name the poller tracks.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job: { type: 'string', description: 'job name (or use studio and log)' },
+          studio: { type: 'string', description: 'Studio whose log file to follow instead of a job' },
+          log: { type: 'string', description: 'log file inside the Studio, ending with PROGRESS_EXIT <code>' },
+          run: { type: 'string', description: 'run this belongs to, e.g. to relaunch a failed run into it' },
+          teamspace: { type: 'string', description: 'owner/teamspace (default: the CLI configured one)' },
+          note: { type: 'string', description: 'why this job was (re)launched' },
+          query: { type: 'string', description: 'server-side log filter, e.g. PROGRESS for very chatty jobs' },
+        },
+      },
+    })
+    // a reload killed the pollers this mod started; start them again where they left off
+    for (const w of Object.values(await read($, watchers))) void startWatch($, w.args)
+    $.clock.every(REFRESH_MS, () => refresh($))
+    void refresh($)
+    return started
+  })
+
+  on('tool.call', { tool: `mcp__lightning__${TOOL}` }, async ($, e) => {
+    const args = watchArgs(e as unknown as Record<string, unknown>)
+    if (!args[0] || args[0].startsWith('--')) {
+      if (!(typeof e.studio === 'string' && typeof e.log === 'string')) {
+        return { deny: 'Give a job name, or both studio and log.' }
+      }
+    }
+    const first = await startWatch($, args)
+    void refresh($)
+    return { result: first }
+  })
+
+  on('skill.prompt', async ($, e, next) => {
+    const out = await next(e)
+    if (!PROGRESS_SKILLS.test(e.skill)) return out
+    return { text: out.text + skillNote(await canDraw($)) }
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const list = await read($, rows)
+    if (e.props.hasSurvey || !list.length) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        {list.slice(0, e.props.maxRows).map(r => (
+          <Text dimColor={r.isStale} wrap="truncate">
+            {r.text}
+          </Text>
+        ))}
+      </Box>
+    )
+  })
+}
