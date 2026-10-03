@@ -1,6 +1,6 @@
 ---
 name: lightning-jobs
-description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, show live progress with an ETA and setback tracking (status-line bar + Monitor events), fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT.
+description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, show live progress with an ETA and setback tracking (status-line bar + Monitor events), fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT. Also load it before launching or resuming any job, even one driven by your own helper scripts or a handoff note; every such run needs the live progress bar from progress.py.
 license: Apache-2.0
 compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
@@ -389,7 +389,9 @@ finish and what a failure cost. The platform reports only a job's status, so the
 own progress and `progress.py`, next to this file, turns it into a status-line bar and chat
 events. [references/progress.md](references/progress.md) has the details of every step: the
 line formats, Studio logs, the bar's layout and how setbacks are classified. `<SKILL_DIR>` is
-this skill's directory, the base directory Claude Code gave when it loaded the skill.
+this skill's directory, the base directory Claude Code gave when it loaded the skill. Use the
+`progress.py` there; don't search the disk for another copy, which can be older and then draws
+every bar.
 
 ```
 job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)

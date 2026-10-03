@@ -384,6 +384,18 @@ class LiveRunFindings(unittest.TestCase):
         out = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True, env=env).stdout
         self.assertIn("r1", out)
 
+    def test_taking_over_the_status_line_from_another_copy_is_reported(self):
+        d = Path(tempfile.mkdtemp())
+        self.assertIsNone(store.replaced_entry(d))  # nothing set up yet
+        store.install_launcher(d)
+        self.assertIsNone(store.replaced_entry(d))  # already this copy
+        other = Path(tempfile.mkdtemp()) / "progress.py"
+        other.write_text("")
+        (d / store.ENTRY_FILE).write_text(f"{other}\n")
+        self.assertEqual(store.replaced_entry(d), str(other))  # another checkout's copy
+        (d / store.ENTRY_FILE).write_text("/plugins/cache/lightning/0.9.0/lightning-jobs/progress.py\n")
+        self.assertIsNone(store.replaced_entry(d))  # a removed plugin version: nothing to report
+
     def test_the_launcher_stays_quiet_when_the_plugin_version_is_gone(self):
         d = Path(tempfile.mkdtemp())
         launcher = store.install_launcher(d)
@@ -535,6 +547,39 @@ class Locations(unittest.TestCase):
         self.assertIn("outside", out)  # started outside Claude Code: no owner, shown everywhere
         self.assertNotIn("theirs", out)
         self.assertIn("theirs", line(""))  # no session to go by: show everything
+
+    def test_parallel_runs_keep_their_places_as_pollers_write(self):
+        d = tempfile.mkdtemp()
+        store.ensure_dirs(Path(d))
+
+        def write(run, started, updated, phase="running", finished=None):
+            s = tracker.new_state(run)
+            s.update(
+                phase=phase, step=5, total=10, peak=5, started_at=started, updated_at=updated, finished_at=finished
+            )
+            store.write_json(Path(d) / "state" / f"{run}.json", s)
+
+        def order() -> list[str]:
+            out = subprocess.run(
+                [sys.executable, str(ENTRY), "statusline"],
+                env=dict(os.environ, LIGHTNING_PROGRESS_DIR=d),
+                input="",
+                capture_output=True,
+                text=True,
+            ).stdout
+            names = ("trainA", "evals", "trainB", "old")
+            return [n for line in out.splitlines() for n in names if f" {n} " in f"{line} "]
+
+        now = time.time()
+        write("trainA", now - 900, now)
+        write("evals", now - 800, now)
+        write("trainB", now - 700, now)
+        write("old", now - 2000, now, phase="done", finished=now - 30)
+        first = order()
+        self.assertEqual(first, ["trainA", "evals", "trainB", "old"])  # live by start time, finished last
+        for run, started in (("trainB", now - 700), ("evals", now - 800), ("trainA", now - 900)):
+            write(run, started, time.time())  # each poller writes in turn, as they do every few seconds
+            self.assertEqual(order(), first)
 
     def test_relaunch_restarts_the_stage_clock(self):
         r = Run()
