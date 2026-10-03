@@ -408,6 +408,14 @@ job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
    print(f"PROGRESS {step}/{total_steps}", flush=True)
    ```
 
+   For a queue (say 8 checkpoints × 7 evals), count across the whole queue in the launch script,
+   so the bar moves from the first item. A log that only names the item being worked on gives the
+   bar nothing to count.
+
+   ```bash
+   echo "PROGRESS_PHASE ckpt-376:mmlu 1/56"
+   ```
+
 2. **Start the poller** as a background Bash command, **outside the agent sandbox** (the SDK's
    requests fail inside it; ask the user to approve it unsandboxed). Any `python3` works. Note the
    run name it prints first: usually the job name, qualified if another workload holds it.
@@ -418,6 +426,11 @@ job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
 
    For work in a Studio, launch it so the log ends with `PROGRESS_EXIT <code>` and watch the log
    file instead: `watch --studio <name> --log <path>` (see the reference).
+
+   **Check the bar has a count** before telling the user the run is under way:
+   `python3 <SKILL_DIR>/progress.py statusline` draws it. If the run shows only
+   `no progress reported yet` after its work has started, the log has nothing the bar can read;
+   fix what the job prints.
 
 3. **Watch events** once `watch` has printed its run name, with a Monitor running
    `python3 <SKILL_DIR>/progress.py events --run <RUN>` at the maximum timeout, re-armed on
@@ -431,7 +444,8 @@ job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
 5. **Relaunch a failed run into the same run**, so its history carries over: the poller waits 30
    minutes for it. Launch the fixed job, then
    `python3 <SKILL_DIR>/progress.py watch <new-job> --run <RUN> --note "<what changed>"`. To give up,
-   `progress.py abandon <RUN>`.
+   `progress.py abandon <RUN>`, also outside the sandbox: it writes the progress folder, which
+   the sandbox can't.
 
 ## Raw API fallback
 
