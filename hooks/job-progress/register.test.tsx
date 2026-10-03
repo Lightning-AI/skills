@@ -1,4 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import type { On } from 'claude-code'
 
 import { isWanted, parseWatchLine, skillNote, watchArgs } from './register'
 
@@ -35,6 +37,10 @@ const STATE = {
 
 const FILES: Record<string, string> = {
   [`${DIR}/state/train-run.json`]: JSON.stringify(STATE),
+  [`${DIR}/runs/train-run.json`]: JSON.stringify({
+    session: 'this-session',
+    jobs: [{ kind: 'job', name: 'train-run', teamspace: 'me/ts' }],
+  }),
   // another session's run stays out of this session's band
   [`${DIR}/state/theirs.json`]: JSON.stringify({ ...STATE, run: 'theirs' }),
   [`${DIR}/runs/theirs.json`]: JSON.stringify({ session: 'someone-else' }),
@@ -73,7 +79,8 @@ describe('skill note', () => {
   })
 })
 
-test('the band shows this session’s runs on the terminal and the desktop app', async ($, on) => {
+/** A session with the state files above, started, its first refresh done. */
+async function started($: Engine, on: On) {
   const clock = mock.clock(on, { now: NOW_MS })
   mock.env(on, { LIGHTNING_PROGRESS_DIR: DIR })
   on('session.id', async () => ({ value: 'this-session' }))
@@ -89,17 +96,70 @@ test('the band shows this session’s runs on the terminal and the desktop app',
     if (text === undefined) throw new Error(`ENOENT ${e.path}`)
     return { value: text }
   })
-
   on('session.start', async (_$, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   await clock.settle()
+  return clock
+}
 
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'lightning', surface, component: 'AbovePrompt', props: {} as never })
+describe('the band', () => {
+  test('the terminal draws this session’s runs as ASCII rows', async ($, on) => {
+    await started($, on)
+    const ui = await $.ui.mount({ plugin: 'lightning', surface: 'terminal', component: 'AbovePrompt', props: {} as never })
     expect(await ui.find({ type: 'Text', text: /train-run .*45%.*ETA 12m05s/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /theirs/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
     await ui.unmount()
-  }
+  })
+
+  test('the desktop app draws an SVG bar, a link to the job and a stop button', async ($, on) => {
+    await started($, on)
+    const ui = await $.ui.mount({ plugin: 'lightning', surface: 'desktop', component: 'AbovePrompt', props: {} as never })
+    expect(await ui.find({ type: 'Text', text: /45% · ETA 12m05s/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /theirs/ })).toBeUndefined()
+    const svg = await ui.find({ type: 'Svg' })
+    expect(String(svg?.props.source)).toContain('<svg')
+    expect(String(svg?.props.alt)).toContain('train-run')
+    expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://lightning.ai/me/ts/jobs/train-run?app_id=jobs')
+    expect(await ui.find({ key: 'stop:train-run' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('stop asks first, then stops the job and tells Claude', async ($, on) => {
+    const ran: string[][] = []
+    const sent: string[] = []
+    const toasts: string[] = []
+    let answer = 'Keep it running'
+    // $.ui.ask is the AskUserQuestion tool's call; answer it as the person picking `answer`
+    on('tool.call', { tool: 'AskUserQuestion' }, async (_$, e) => {
+      const q = e.questions[0]!
+      return { result: { questions: e.questions, answers: { [q.question]: answer } } } as never
+    })
+    on('ui.toast', async (_$, e) => {
+      toasts.push(String((e as { text?: unknown }).text))
+      return { value: undefined } as never
+    })
+    on('process.run', async (_$, e) => {
+      ran.push([...e.argv])
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    on('prompt.submit', async (_$, e) => {
+      sent.push(e.text)
+      return { text: e.text } as never
+    })
+    const clock = await started($, on)
+    const ui = await $.ui.mount({ plugin: 'lightning', surface: 'desktop', component: 'AbovePrompt', props: {} as never })
+    await ui.press({ key: 'stop:train-run' })
+    expect(ran.filter(a => a[0] === 'lightning')).toHaveLength(0)
+
+    answer = 'Stop it'
+    await ui.press({ key: 'stop:train-run' })
+    expect(ran.find(a => a[0] === 'lightning')).toEqual(['lightning', 'job', 'stop', 'train-run', '--teamspace', 'me/ts'])
+    expect(toasts.join()).toContain('Stopped train-run')
+    await clock.advance(2000)
+    expect(sent.join('\n')).toContain('the user stopped job train-run')
+    await ui.unmount()
+  })
 })
 
 describe('lightning job watch', () => {
@@ -133,7 +193,7 @@ describe('lightning job watch', () => {
     })
     on('prompt.submit', async (_$, e) => {
       sent.push(e.text)
-      return { value: undefined } as never
+      return { text: e.text } as never
     })
 
     const out = await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
@@ -146,4 +206,26 @@ describe('lightning job watch', () => {
     expect(sent[0]).toContain('r: failed')
     expect(sent[0]).not.toContain('50%')
   })
+})
+
+test('an event reaches an idle Claude as a turn of its own', async ($, on) => {
+  const clock = mock.clock(on, { now: NOW_MS })
+  mock.env(on, { LIGHTNING_PROGRESS_DIR: DIR })
+  const sent: string[] = []
+  on('session.id', async () => ({ value: 'this-session' }))
+  on('session.surfaces', async () => ({ value: ['terminal'] }))
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.spawn', async function* () {
+    const ev = (kind: string, msg: string) => ({ stream: 'stdout' as const, text: JSON.stringify({ kind, run: 'r', msg: `r: ${msg}` }) + '\n' })
+    yield ev('watching', 'watching train-run')
+    yield ev('retry', 'attempt 2 after OOM')
+    return { value: { code: 0, signal: null } }
+  })
+  on('prompt.submit', async (_$, e) => {
+    sent.push(e.text)
+    return { text: e.text } as never
+  })
+  await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
+  await clock.advance(2000)
+  expect(sent).toEqual(['Lightning job progress:\n- r: attempt 2 after OOM'])
 })
