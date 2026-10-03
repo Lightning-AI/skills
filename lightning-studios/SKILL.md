@@ -1,6 +1,6 @@
 ---
 name: lightning-studios
-description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio". Also load it before launching or resuming any detached run on a Studio, even one driven by your own helper scripts or a handoff note; every such run needs the live progress bar from lightning-jobs/progress.py.
+description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio". Also load it before launching or resuming any detached run on a Studio, even one driven by your own helper scripts, a handoff note or the summary of a compacted conversation, and load it again after a compaction; every such run needs the live progress bar from lightning-jobs/progress.py.
 license: Apache-2.0
 compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
