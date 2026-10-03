@@ -1,6 +1,6 @@
 ---
 name: lightning-studios
-description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio".
+description: Manage Lightning AI Studios (cloud dev machines with CPUs/GPUs) - create, start, stop, delete studios, switch machine types, run commands in them (including long detached runs with live progress tracking), upload/download files, and SSH in. Use when the user wants to work with lightning.ai Studios, needs a cloud GPU dev box, or asks to run something "on a studio". Also load it before launching or resuming any detached run on a Studio, even one driven by your own helper scripts or a handoff note; every such run needs the live progress bar from lightning-jobs/progress.py.
 license: Apache-2.0
 compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
@@ -12,6 +12,7 @@ A Studio is a persistent cloud development machine on [lightning.ai](https://lig
 ## Setup & auth
 
 ```bash
+export DEBUG=0 LIGHTNING_DEBUG=0   # an inherited DEBUG=1 logs the Authorization header; set this in every new shell
 # Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
 v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
 [ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
@@ -76,6 +77,21 @@ else
   lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
 fi
 ```
+
+**Signed in as the wrong account.** A saved teamspace can belong to a different login, and
+`lightning login` reuses the current identity. To sign in separately, give the new login its own
+credentials file and no inherited key, then check who you are and what you can see:
+
+```bash
+D=$(mktemp -d "${TMPDIR:-/tmp}/lightning-login.XXXXXX") && chmod 700 "$D" && echo "env file: $D/env"
+printf '%s\n' 'unset LIGHTNING_API_KEY LIGHTNING_USER_ID LIGHTNING_AUTH_TOKEN' \
+  "export LIGHTNING_CREDENTIAL_PATH='$D/credentials.json' DEBUG=0 LIGHTNING_DEBUG=0" > "$D/env"
+. "$D/env" && lightning login && lightning auth whoami \
+  && lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
+```
+
+Shell variables don't carry over between agent commands, so start every later command with
+`. "$D/env" &&` (the path printed above) and pass `--teamspace` explicitly.
 
 ## CLI reference
 
@@ -215,13 +231,47 @@ H200 isn't on AWS). The first workflow below guards against this:
 3. **After switching to that row's `Machine`, wait until the Studio can run commands and check the
    hardware.** No GPU means stop the Studio and go back to step 1; don't retry.
 
+## Live progress for detached runs (required)
+
+**Every run you detach on a Studio gets a live progress bar, an ETA and setback tracking from
+[`lightning-jobs/progress.py`](../lightning-jobs/progress.py).** This applies to every launch,
+including one from a helper script you wrote yourself, not only the example workflow below.
+Printing log lines from a wait loop, or asking the user to `tail -f` a file, doesn't count.
+
+`progress.py` ships with the `lightning-jobs` skill, which is installed next to this one (by the
+plugin and by `npx skills add`). `<LIGHTNING_JOBS_SKILL_DIR>` is the base directory Claude Code gave
+for `lightning-jobs` if it's loaded, or else `<THIS_SKILL_DIR>/../lightning-jobs`. Check that
+`<LIGHTNING_JOBS_SKILL_DIR>/progress.py` exists and use that copy. Don't search the disk for
+another `progress.py`: other checkouts can be older, and the last watcher started decides
+which copy draws every bar. Then follow that skill's
+[*Live progress, ETA and setbacks*](../lightning-jobs/SKILL.md#live-progress-eta-and-setbacks)
+section: the `PROGRESS` line format, the Monitor on `events`, and the status-line offer.
+Only the launch and the `watch` command differ on a Studio.
+
+**Launch on the Studio** (e.g. through `studio.run_and_detach`) from the script's folder,
+unbuffered (`-u`) so `PROGRESS` lines reach the log while the run is going, and end the log with
+`PROGRESS_EXIT` so a crash is told apart from success:
+
+```bash
+cd ~/src && nohup sh -c 'python -u train.py > train.log 2>&1; echo PROGRESS_EXIT $? >> train.log' </dev/null >/dev/null 2>&1
+```
+
+**Watch from your machine**, as a background command outside the agent sandbox. `--log` is
+relative to the Studio's home, so `src/train.log` is the file the launch writes:
+
+```bash
+python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
+```
+
+**If `progress.py` isn't there**, `lightning-jobs` isn't installed. Tell the user once that
+installing it adds the live bar. Until then, every few minutes, report the last `PROGRESS` line
+and any error from `tail -n 40` of the log.
+
 ## Example workflows
 
 Prompts this skill handles: *"spin up a GPU studio and run my training script"*, *"copy this repo to my studio and start a long run"*, *"SSH into exp-studio"*, *"my studio is idle, stop it"*.
 
-**Set up on CPU, switch to a GPU, run, show the live bar, collect results, stop.** A run takes
-two background commands: this script, and `progress.py watch` for the user's live bar (see *Show
-the user live progress* after the code). Start both. `Running` comes before a Studio
+**Set up on CPU, switch to a GPU, run, collect results, stop.** `Running` comes before a Studio
 can run commands, and `studio.start()` / `lightning studio start` can keep blocking after it can,
 or never return. So start in the background and poll for readiness with a deadline (see Gotchas).
 Other SDK calls (`run*`, `switch_machine`, `stop`) poll with no time limit of their own, so every
@@ -341,12 +391,11 @@ try:                                                          # any failure from
     print(gpus)                                               # e.g. ['NVIDIA H200']
     assert len(gpus) == 1 and "H200" in gpus[0], "wrong hardware: pick another account"
     wait_ready(studio)                                        # a new machine: wait until it can run commands
-    # the exit code goes to train.exit for this loop and to the log for progress.py (below);
+    # the exit code goes to train.exit for this loop and to the log for progress.py;
     # clear the last run's before launching
-    bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python train.py > train.log 2>&1; c=$?; echo PROGRESS_EXIT $c >> train.log; echo $c > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
+    bounded(lambda: studio.run_and_detach("cd ~/src && rm -f train.exit && nohup sh -c 'python -u train.py > train.log 2>&1; c=$?; echo PROGRESS_EXIT $c >> train.log; echo $c > train.exit' </dev/null >/dev/null 2>&1", timeout=30), 120)
     print(run_if_up(studio, "tail -n 40 ~/src/train.log")[0])          # within the first minute: crashes show up in seconds
-    # launched: start `progress.py watch` now as its own background command (*Show the user live
-    # progress* below); this loop only guards the deadline, so it prints nothing
+    # now start the watcher (*Live progress for detached runs*); this loop only guards the deadline
     deadline = time.time() + 2 * 3600                         # a bit over the expected run time
     while run_if_up(studio, "test -f ~/src/train.exit")[1] != 0:
         if time.time() > deadline:
@@ -363,32 +412,8 @@ lightning cp -r lit://my-org/my-teamspace/studios/exp-1/src/outputs/ ./outputs
 lightning studio stop --name exp-1 --teamspace my-org/my-teamspace
 ```
 
-**Show the user live progress, don't hand-roll it.** This step is part of every detached run,
-not an extra. Right after the launch, start the `lightning-jobs` skill's `progress.py` on the
-Studio and the log as a separate background command, never from inside the script above (that
-skill's *Live progress, ETA and setbacks* section). It gives the user a status-line bar, an ETA
-and setback tracking. Printing log lines from the loop above, a Monitor that greps the
-launcher's output, or asking the user to `tail -f` a file does not: point the Monitor at
-`progress.py events` instead.
-`progress.py` ships with the `lightning-jobs` skill, not with this one, so find it first:
-
-- **`lightning-jobs` is loaded or listed in this session:** use the base directory Claude Code
-  gave for it, and read its *Live progress* section.
-- **Otherwise** look next to this skill's own base directory (the plugin and `npx skills add`
-  both install the skills side by side): `ls <THIS_SKILL_DIR>/../lightning-jobs/progress.py`.
-- **Not found:** `lightning-jobs` isn't installed. Tell the user once that installing it adds the
-  live bar, and meanwhile report progress yourself: every few minutes of the wait loop above,
-  print the last `PROGRESS` line and any error from `tail -n 40 ~/src/train.log`.
-
-`<LIGHTNING_JOBS_SKILL_DIR>` is the folder found above. Paths are relative to the Studio's home:
-
-```bash
-python3 <LIGHTNING_JOBS_SKILL_DIR>/progress.py watch --studio exp-1 --log src/train.log --teamspace my-org/my-teamspace
-```
-
-It reads new log lines every 10 s and uses the `PROGRESS_EXIT` line the launch writes to tell
-success from a crash. Relaunching into the same log (overwritten or appended) counts as the run's
-next attempt, so crash-and-retry shows up as a setback rather than a fresh start.
+Once `train.py` is detached, start its watcher as in *Live progress for detached runs*:
+`progress.py watch --studio exp-1 --log src/train.log`.
 
 For a short run where setup is light (a `uv` script that declares its own dependencies), skip
 the CPU phase but keep the `try` block and its deadline: `start_ready(studio, gpu)`, then
@@ -418,6 +443,14 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 
 ## Gotchas
 
+- **Inherited `DEBUG=1` leaks credentials.** SDK HTTP diagnostics then print the
+  `Authorization` header, even on a config read, which is why the setup block sets
+  `DEBUG=0 LIGHTNING_DEBUG=0`. Never publish such logs; if a key was printed, tell the user to
+  rotate it (avatar → **Global Settings → Keys**).
+- **A saved teamspace can belong to a different login.** If resolving it fails, compare
+  `lightning auth whoami` with `lightning api /v1/memberships`, and never switch organizations on
+  your own: a sole membership elsewhere doesn't replace the one requested. See *Signed in as the
+  wrong account*.
 - **Stop Studios when done: attached compute bills, and GPUs cost more.**
 - **`start()` on a Studio already running on a different machine raises.** Use `switch_machine` instead.
 - Disabling auto-sleep (`studio.auto_sleep = False`) or setting `auto_sleep_time` converts a free CPU studio to paid.

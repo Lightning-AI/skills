@@ -1,6 +1,6 @@
 ---
 name: lightning-jobs
-description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, show live progress with an ETA and setback tracking (status-line bar + Monitor events), fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT.
+description: Launch and manage batch jobs on Lightning AI - run commands on cloud CPUs/GPUs from a Docker image or a Studio snapshot, monitor status, show live progress with an ETA and setback tracking (status-line bar + Monitor events), fetch logs, SSH into a running job or multi-machine worker, collect artifacts, and run multi-machine (distributed) training. Use when the user wants to run training, data processing, or any batch workload on lightning.ai, or asks to SSH into a job / MMT. Also load it before launching or resuming any job, even one driven by your own helper scripts or a handoff note; every such run needs the live progress bar from progress.py.
 license: Apache-2.0
 compatibility: Requires Python with uv or pip, the lightning CLI from the lightning-sdk package (installed on demand), network access to lightning.ai, and a Lightning AI account.
 ---
@@ -12,6 +12,7 @@ A Job runs a command on a dedicated cloud machine and terminates when done. Two 
 ## Setup & auth
 
 ```bash
+export DEBUG=0 LIGHTNING_DEBUG=0   # an inherited DEBUG=1 logs the Authorization header; set this in every new shell
 # Use the Lightning AI CLI from the current env; install or upgrade it there if it's missing or older than 2026.9.18
 v=$(lightning --version 2>/dev/null | sed -n 's/^Lightning CLI version //p')
 [ -n "$v" ] && [ "$(printf '%s\n' 2026.9.18 "$v" | sort -V | head -1)" = 2026.9.18 ] \
@@ -98,6 +99,21 @@ else
   lightning config set teamspace "$OWNER/$TS"   # or pass --teamspace "$OWNER/$TS" each time
 fi
 ```
+
+**Signed in as the wrong account.** A saved teamspace can belong to a different login, and
+`lightning login` reuses the current identity. To sign in separately, give the new login its own
+credentials file and no inherited key, then check who you are and what you can see:
+
+```bash
+D=$(mktemp -d "${TMPDIR:-/tmp}/lightning-login.XXXXXX") && chmod 700 "$D" && echo "env file: $D/env"
+printf '%s\n' 'unset LIGHTNING_API_KEY LIGHTNING_USER_ID LIGHTNING_AUTH_TOKEN' \
+  "export LIGHTNING_CREDENTIAL_PATH='$D/credentials.json' DEBUG=0 LIGHTNING_DEBUG=0" > "$D/env"
+. "$D/env" && lightning login && lightning auth whoami \
+  && lightning api /v1/memberships | jq -r '.memberships[] | [.ownerType, .name, .projectId] | @tsv'
+```
+
+Shell variables don't carry over between agent commands, so start every later command with
+`. "$D/env" &&` (the path printed above) and pass `--teamspace` explicitly.
 
 ## CLI reference
 
@@ -370,11 +386,13 @@ for lr in ["1e-3", "3e-4", "1e-4"]:
 
 Start the bar for every job and every detached Studio run the user waits on, unless they
 decline: show them how far along it is, when it should finish and what a failure cost. Say it
-comes with the run when you ask them to approve the launch. The platform reports only a job's status, so the job prints its
-own progress and `progress.py`, next to this file, turns it into a status-line bar and chat
-events. [references/progress.md](references/progress.md) has the details of every step: the
+comes with the run when you ask them to approve the launch. The platform reports only a job's
+status, so the job prints its own progress and `progress.py`, next to this file, turns it into a
+status-line bar and chat events. [references/progress.md](references/progress.md) has the details of every step: the
 line formats, Studio logs, the bar's layout and how setbacks are classified. `<SKILL_DIR>` is
-this skill's directory, the base directory Claude Code gave when it loaded the skill.
+this skill's directory, the base directory Claude Code gave when it loaded the skill. Use the
+`progress.py` there; don't search the disk for another copy, which can be older and then draws
+every bar.
 
 ```
 job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
@@ -448,6 +466,14 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 
 ## Gotchas
 
+- **Inherited `DEBUG=1` leaks credentials.** SDK HTTP diagnostics then print the
+  `Authorization` header, even on a config read, which is why the setup block sets
+  `DEBUG=0 LIGHTNING_DEBUG=0`. Never publish such logs; if a key was printed, tell the user to
+  rotate it (avatar → **Global Settings → Keys**).
+- **A saved teamspace can belong to a different login.** If resolving it fails, compare
+  `lightning auth whoami` with `lightning api /v1/memberships`, and never switch organizations on
+  your own: a sole membership elsewhere doesn't replace the one requested. See *Signed in as the
+  wrong account*.
 - Jobs bill machine time while allocated; always confirm with the user before launching on a GPU or with `num_machines` > 1 (see *Machines*), and prefer `wait(..., stop_on_timeout=True)` so runaway jobs get stopped.
 - **Treat a silent monitor as a failure.** A poller with no deadline, one that only matches progress lines, or one that can't reach lightning.ai (a sandboxed background command) stays quiet through a crash. Poll `job.status` with a deadline, react to `Failed`/`Stopped` as well as `Completed`, and check the poller prints its first line.
 - **`max_runtime` is not a time or spend cap.** It is a DWS reservation duration, applied only on non-spot machines that are `dws_supported`/`dws_only`, and a no-op elsewhere (verified inert on an L40S run). `job.wait(timeout=..., stop_on_timeout=True)` does stop a job, but only while the calling process survives. So don't promise an unattended bound on an ordinary machine: say what enforces it, and keep something alive to call `job.stop()`.

@@ -179,6 +179,13 @@ def shown(d: Path, s: dict[str, Any], now: float, session: str | None = None) ->
     return pid_alive(runfile.get("pid"))
 
 
+def display_order(s: dict[str, Any]) -> tuple[bool, float, str]:
+    """Live runs above finished ones, then oldest start first, then by name. Every poller rewrites
+    its state every few seconds, so sorting by the last update made parallel runs swap places."""
+    started = s.get("started_at")
+    return (s["phase"] in FINAL_PHASES, started if started is not None else float("inf"), s["run"])
+
+
 def asking_session() -> str | None:
     """The session_id in the JSON Claude Code sends the status line on stdin, if any."""
     if sys.stdin.isatty():
@@ -236,10 +243,10 @@ def cmd_statusline(args: argparse.Namespace) -> int:
     now = time.time()
     states = [s for s in (read_json(p) for p in sorted((d / "state").glob("*.json"))) if s]
     visible = [s for s in states if shown(d, s, now, session)]
-    visible.sort(key=lambda s: (s["phase"] in FINAL_PHASES, -(s.get("updated_at") or 0)))
+    visible.sort(key=display_order)
     rows: list[str] = []
     for i, s in enumerate(visible[:5]):
-        # expand the two most recently active runs; the rest stay one line each
+        # expand the first two runs; the rest stay one line each
         out = render_rows(s, now, expand=i < 2)
         if rows and len(rows) + len(out) > MAX_STATUS_ROWS:
             out = [render_line(s, now)]
