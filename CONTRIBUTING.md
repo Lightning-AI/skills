@@ -164,12 +164,15 @@ Python 3.9 or newer, and every platform Claude Code runs on.
 ## Open a PR
 
 ```bash
-git checkout -b <area>-skill
+git checkout -b feat/<issue>-<area>-skill
 git add lightning-<area>/SKILL.md README.md .claude-plugin/plugin.json
-git commit -m "Add lightning-<area> skill (live-verified against <control plane>)"
+git commit -m "feat(<area>): add lightning-<area> skill"
 git push -u origin HEAD
 gh pr create --fill
 ```
+
+Branches are named `<type>/<issue>-<description>`; drop `<issue>-` when the work tracks no
+GitHub issue. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 In the PR description, say **what control plane you tested against** and paste a
 line or two of evidence (the URL you minted, the resource you listed). That's what
