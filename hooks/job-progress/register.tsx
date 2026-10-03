@@ -8,7 +8,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { RunCard, Watcher } from '../../types'
 import { createDelivery } from './delivery'
-import { barAlt, barSvg, jobUrl, toCards, type JobRef } from './desktop'
+import { BAR_H, BAR_W, barAlt, barSvg, jobUrl, toCards, type JobRef } from './desktop'
 import { FINAL_VISIBLE_FOR, isFinal, renderAll, type RunState } from './render'
 
 const rows = atom({ plugin: 'lightning', key: 'rows' } as const, [])
@@ -22,7 +22,8 @@ const RELAUNCH_WAIT = '1800'
 const PYTHONS = [['python3'], ['python'], ['py', '-3']]
 // skills whose jobs and Studio runs report progress through progress.py
 const PROGRESS_SKILLS = /(^|:)lightning-(jobs|studios)$/
-const HINT = 'status-line bar is not set up'
+// the poller's notes about the status line, which the mod replaces, so Claude has nothing to do with them
+const STATUS_LINE_HINT = /status[- ]line/
 // progress the bars already show (job_progress/events.py ROUTINE_KINDS)
 const ROUTINE_KINDS = ['milestone', 'stage', 'started', 'recovered', 'watching']
 
@@ -156,7 +157,7 @@ function startFeed($: EngineInterface, run: string): void {
       const all = !(await canDraw($))
       const { argv, env } = await progressCmd($, ['events', '--run', run, ...(all ? ['--all'] : [])])
       for await (const line of lines($.process.spawn({ argv, env }))) {
-        if (!line.includes(HINT)) tell($, line)
+        if (!STATUS_LINE_HINT.test(line)) tell($, line)
       }
     } catch (err) {
       $.ui.log(`${run}: event feed stopped: ${String(err)}`, { to: 'debug' })
@@ -230,7 +231,7 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
               // this child is the run's feed; restarted after a reload, it carries on as the same run
               if (viaSdk) feeds.add(run)
               const again = args.includes('--run') ? args : [...args, '--run', run]
-              await update($, watchers, w => ({ ...w, [run!]: { args: again } }))
+              await keepWatchers($, w => ({ ...w, [run!]: { args: again } }))
             }
             continue
           }
@@ -244,11 +245,26 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
         settle()
         if (run) {
           feeds.delete(run)
-          await update($, watchers, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
+          await keepWatchers($, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
         }
       }
     })()
   })
+}
+
+/** The session's pollers, kept in its state (a hot reload) and in the store under its id (the
+ * session itself restarting, as the desktop app does), so either brings them back. */
+async function keepWatchers($: EngineInterface, fn: (w: Record<string, Watcher>) => Record<string, Watcher>): Promise<void> {
+  await update($, watchers, fn)
+  try {
+    const key = `watchers:${await $.session.id()}`
+    const now = await read($, watchers)
+    if (Object.keys(now).length) await $.store.set(key, now)
+    else await $.store.delete(key)
+  } catch (err) {
+    // the poller runs on regardless; it just won't come back after a restart of the session
+    $.ui.log(`could not save the pollers for a restart: ${String(err)}`, { to: 'debug' })
+  }
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -334,8 +350,9 @@ export const register: Register = on => {
         },
       },
     })
-    // a reload killed the pollers this mod started; start them again where they left off
-    for (const w of Object.values(await read($, watchers))) void startWatch($, w.args)
+    // a reload or a restart of the session killed the pollers this mod started; start them again
+    const stored = ((await $.store.get(`watchers:${await $.session.id()}`).catch(() => undefined)) ?? {}) as Record<string, Watcher>
+    for (const w of Object.values({ ...stored, ...(await read($, watchers)) })) void startWatch($, w.args)
     $.clock.every(REFRESH_MS, () => refresh($))
     void refresh($)
     return started
@@ -396,7 +413,7 @@ export const register: Register = on => {
                     {c.cost ? ` · ${c.cost}` : ''}
                   </Text>
                 </Box>
-                <Svg source={barSvg(c)} alt={barAlt(c)} isInteractive />
+                <Svg source={barSvg(c)} alt={barAlt(c)} width={BAR_W} height={BAR_H} />
                 {c.detail ? (
                   <Text dimColor wrap="truncate">
                     {c.detail}

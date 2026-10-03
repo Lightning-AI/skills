@@ -80,9 +80,10 @@ describe('skill note', () => {
 })
 
 /** A session with the state files above, started, its first refresh done. */
-async function started($: Engine, on: On) {
+async function started($: Engine, on: On, store: Record<string, unknown> = {}) {
   const clock = mock.clock(on, { now: NOW_MS })
   mock.env(on, { LIGHTNING_PROGRESS_DIR: DIR })
+  mock.store(on, store)
   on('session.id', async () => ({ value: 'this-session' }))
   on('session.surfaces', async () => ({ value: ['terminal'] }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__lightning__${e.name}` } }))
@@ -120,9 +121,22 @@ describe('the band', () => {
     const svg = await ui.find({ type: 'Svg' })
     expect(String(svg?.props.source)).toContain('<svg')
     expect(String(svg?.props.alt)).toContain('train-run')
+    // sized to the bar: a frame left to its default height draws a tall empty box
+    expect(svg?.props.height).toBe(12)
     expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://lightning.ai/me/ts/jobs/train-run?app_id=jobs')
     expect(await ui.find({ key: 'stop:train-run' })).toBeDefined()
     await ui.unmount()
+  })
+
+  test('a restarted session starts its pollers again', async ($, on) => {
+    const spawned: string[][] = []
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.spawn', async function* (_$, e) {
+      spawned.push([...e.argv])
+      return { value: { code: 0, signal: null } }
+    })
+    await started($, on, { 'watchers:this-session': { 'train-run': { args: ['train-run', '--run', 'train-run'] } } })
+    expect(spawned.some(a => a.join(' ').includes('watch train-run --run train-run'))).toBe(true)
   })
 
   test('stop asks first, then stops the job and tells Claude', async ($, on) => {
