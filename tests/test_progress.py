@@ -912,6 +912,34 @@ class ReviewFindings(unittest.TestCase):
         finally:
             studio.tearDown()
 
+    def test_a_scripts_own_step_counter_is_read(self):
+        reading = must(tracker.parse_progress("[train] step 60/200 loss 0.0156 1.89s/step"))
+        self.assertEqual((reading["step"], reading["total"], reading["source"]), (60, 200, "step"))
+        self.assertEqual(must(tracker.parse_progress("iter: 3/50"))["step"], 3)
+        self.assertIsNone(tracker.parse_progress("Validation step 3/10"))
+        self.assertIsNone(tracker.parse_progress("[eval:base] exact=73.3% (n=300, 150 multi-call)"))
+        r = Run()
+        r.line(T0 + 10, "[train] step 10/200 loss 0.04")
+        r.line(T0 + 20, "[train] step 20/200 loss 0.03")
+        self.assertEqual(r.s["step"], 20)
+        r.line(T0 + 30, " 50%|█████     | 5/10")  # a tqdm bar outranks the step counter from here on
+        r.line(T0 + 40, "[train] step 30/200 loss 0.02")
+        self.assertEqual((r.s["step"], r.s["source"]), (5, "tqdm"))
+        r.line(T0 + 50, "PROGRESS 70/100")
+        r.line(T0 + 60, " 60%|██████    | 6/10")
+        self.assertEqual((r.s["step"], r.s["source"]), (70, "progress"))
+        self.assertEqual(r.s["setbacks"], [])
+
+    def test_a_step_counter_that_starts_over_is_only_a_setback_after_a_relaunch(self):
+        r = Run()
+        r.line(T0 + 10, "step 90/100")
+        r.line(T0 + 20, "step 5/100")  # the script's next pass
+        self.assertEqual(r.s["setbacks"], [])
+        r.tick("Pending", T0 + 30)  # requeued
+        r.tick("Running", T0 + 40)
+        r.line(T0 + 50, "step 1/100")
+        self.assertEqual([b["kind"] for b in r.s["setbacks"]], ["restart"])
+
     def test_a_follower_let_go_of_writes_nothing(self):
         release = threading.Event()
 
