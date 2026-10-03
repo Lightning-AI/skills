@@ -72,6 +72,10 @@ claude plugin test .                                # hooks/job-progress/*.test.
 claude --plugin-dir .                               # try it in a session
 ```
 
+The terminal draws `render.ts`'s ASCII rows. The desktop app draws `desktop.ts`'s cards: an SVG bar
+with a stage timeline, a link to the job and a stop button. `delivery.ts` decides how a note reaches
+Claude: into the running turn when it's busy, as a turn of its own when it's idle.
+
 `render.ts` is a port of `job_progress/statusline.py`: change both together. Its tests hold the
 Python status line's output for the same states, so regenerate them when the bars change.
 

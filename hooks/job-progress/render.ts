@@ -42,7 +42,7 @@ export const STATE_STALE_AFTER = 60
 export const FINAL_VISIBLE_FOR = 600
 export const MAX_ROWS = 10
 
-const ICONS: Record<string, string> = {
+export const ICONS: Record<string, string> = {
   pending: '⏳',
   starting: '▶',
   running: '▶',
@@ -96,14 +96,14 @@ function stageTrack(s: RunState, now: number, keep = 3): string {
   return parts.join(' · ')
 }
 
-function jobFraction(s: RunState): number | null {
+export function jobFraction(s: RunState): number | null {
   if (!s.stage_count) return null
   const frac = s.total && s.step !== null ? s.step / s.total : 0
   return Math.max(0, Math.min(1, ((s.stage_index || 1) - 1 + Math.min(frac, 1)) / s.stage_count))
 }
 
-const peakOf = (s: RunState): number | null => (s.peak_epoch === s.epoch ? s.peak : s.step)
-const isStale = (s: RunState, now: number): boolean =>
+export const peakOf = (s: RunState): number | null => (s.peak_epoch === s.epoch ? s.peak : s.step)
+export const isStale = (s: RunState, now: number): boolean =>
   !isFinal(s) && !!s.updated_at && now - s.updated_at > STATE_STALE_AFTER
 
 export function renderLine(s: RunState, now: number): Row {

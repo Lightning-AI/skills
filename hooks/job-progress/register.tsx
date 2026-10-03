@@ -6,10 +6,13 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Watcher } from '../../types'
+import type { RunCard, Watcher } from '../../types'
+import { createDelivery } from './delivery'
+import { BAR_H, BAR_W, barAlt, barSvg, jobUrl, toCards, type JobRef } from './desktop'
 import { FINAL_VISIBLE_FOR, isFinal, renderAll, type RunState } from './render'
 
 const rows = atom({ plugin: 'lightning', key: 'rows' } as const, [])
+const cards = atom({ plugin: 'lightning', key: 'cards' } as const, [])
 const watchers = atom({ plugin: 'lightning', key: 'watchers' } as const, {})
 
 const TOOL = 'watch_job'
@@ -19,11 +22,12 @@ const RELAUNCH_WAIT = '1800'
 const PYTHONS = [['python3'], ['python'], ['py', '-3']]
 // skills whose jobs and Studio runs report progress through progress.py
 const PROGRESS_SKILLS = /(^|:)lightning-(jobs|studios)$/
-const HINT = 'status-line bar is not set up'
+// the poller's notes about the status line, which the mod replaces, so Claude has nothing to do with them
+const STATUS_LINE_HINT = /status[- ]line/
 // progress the bars already show (job_progress/events.py ROUTINE_KINDS)
 const ROUTINE_KINDS = ['milestone', 'stage', 'started', 'recovered', 'watching']
 
-type RunFile = { session?: string | null }
+type RunFile = { session?: string | null; jobs?: { kind?: string; name?: string; teamspace?: string | null }[] }
 
 /** The skill text's addendum: the mod does steps 2-4 of the skill's "Live progress" workflow. */
 export function skillNote(hasBar: boolean): string {
@@ -79,6 +83,7 @@ let sdkWatch: boolean | null = null
 // an SDK watcher between its start and its first line, when refresh can't yet tell its run is fed
 let sdkStarting = 0
 let isFlushing = false
+let delivery: ReturnType<typeof createDelivery> | null = null
 
 async function stateDir($: EngineInterface): Promise<string> {
   const own = await $.env.get('LIGHTNING_PROGRESS_DIR')
@@ -112,7 +117,7 @@ async function progressCmd($: EngineInterface, args: string[]): Promise<{ argv: 
   return { argv: [...(await pythonCmd($)), script, ...args], env: { CLAUDE_CODE_SESSION_ID: await $.session.id() } }
 }
 
-/** Lines from the feeds go to Claude together, as one message, once they stop coming. */
+/** Lines from the feeds go to Claude together, as one note, once they stop coming. */
 function tell($: EngineInterface, line: string): void {
   pending.push(line)
   if (isFlushing) return
@@ -120,9 +125,28 @@ function tell($: EngineInterface, line: string): void {
   $.clock.after(BATCH_MS, async () => {
     isFlushing = false
     const batch = pending.splice(0)
-    if (!batch.length) return
-    await $.prompt.submit({ text: ['Lightning job progress:', ...batch.map(l => `- ${l}`)].join('\n') })
+    if (batch.length) await deliveryFor($).deliver(batch)
   })
+}
+
+/** The note goes into the running turn as a user-role row Claude reads and the person doesn't see. */
+async function appendNote($: EngineInterface, text: string): Promise<boolean> {
+  try {
+    const out = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+    return !('deny' in out && out.deny)
+  } catch (err) {
+    $.ui.log(`could not add the note to the running turn: ${String(err)}`, { to: 'debug' })
+    return false
+  }
+}
+
+async function submitNote($: EngineInterface, text: string): Promise<void> {
+  await $.prompt.submit({ text })
+}
+
+function deliveryFor($: EngineInterface): ReturnType<typeof createDelivery> {
+  delivery ??= createDelivery({ append: text => appendNote($, text), submit: text => submitNote($, text) })
+  return delivery
 }
 
 /** `progress.py events --run RUN`: the Monitor's feed, with its cursor, read by the mod. */
@@ -133,7 +157,7 @@ function startFeed($: EngineInterface, run: string): void {
       const all = !(await canDraw($))
       const { argv, env } = await progressCmd($, ['events', '--run', run, ...(all ? ['--all'] : [])])
       for await (const line of lines($.process.spawn({ argv, env }))) {
-        if (!line.includes(HINT)) tell($, line)
+        if (!STATUS_LINE_HINT.test(line)) tell($, line)
       }
     } catch (err) {
       $.ui.log(`${run}: event feed stopped: ${String(err)}`, { to: 'debug' })
@@ -207,7 +231,7 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
               // this child is the run's feed; restarted after a reload, it carries on as the same run
               if (viaSdk) feeds.add(run)
               const again = args.includes('--run') ? args : [...args, '--run', run]
-              await update($, watchers, w => ({ ...w, [run!]: { args: again } }))
+              await keepWatchers($, w => ({ ...w, [run!]: { args: again } }))
             }
             continue
           }
@@ -221,11 +245,26 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
         settle()
         if (run) {
           feeds.delete(run)
-          await update($, watchers, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
+          await keepWatchers($, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
         }
       }
     })()
   })
+}
+
+/** The session's pollers, kept in its state (a hot reload) and in the store under its id (the
+ * session itself restarting, as the desktop app does), so either brings them back. */
+async function keepWatchers($: EngineInterface, fn: (w: Record<string, Watcher>) => Record<string, Watcher>): Promise<void> {
+  await update($, watchers, fn)
+  try {
+    const key = `watchers:${await $.session.id()}`
+    const now = await read($, watchers)
+    if (Object.keys(now).length) await $.store.set(key, now)
+    else await $.store.delete(key)
+  } catch (err) {
+    // the poller runs on regardless; it just won't come back after a restart of the session
+    $.ui.log(`could not save the pollers for a restart: ${String(err)}`, { to: 'debug' })
+  }
 }
 
 async function refresh($: EngineInterface): Promise<void> {
@@ -239,6 +278,7 @@ async function refresh($: EngineInterface): Promise<void> {
     // no poller has run on this machine yet
   }
   const states: RunState[] = []
+  const jobs: Record<string, JobRef> = {}
   for (const f of entries) {
     if (f.kind !== 'file' || !f.name.endsWith('.json') || nowMs - f.mtimeMs > FINAL_VISIBLE_FOR * 1000) continue
     try {
@@ -247,14 +287,43 @@ async function refresh($: EngineInterface): Promise<void> {
       // this session's runs, plus runs started outside Claude Code, as the status line shows
       if (runfile.session && runfile.session !== session) continue
       states.push(s)
+      const last = runfile.jobs?.at(-1)
+      if (last?.kind === 'job' && last.name) jobs[s.run] = { name: last.name, teamspace: last.teamspace ?? null }
       if (runfile.session === session && !isFinal(s) && !feeds.has(s.run) && !sdkStarting) startFeed($, s.run)
     } catch {
       // a state file mid-write; the next tick reads it
     }
   }
-  const next = renderAll(states, nowMs / 1000)
-  const current = await read($, rows)
-  if (JSON.stringify(next) !== JSON.stringify(current)) await update($, rows, () => next)
+  const now = nowMs / 1000
+  const next = renderAll(states, now)
+  if (JSON.stringify(next) !== JSON.stringify(await read($, rows))) await update($, rows, () => next)
+  const nextCards = toCards(states, jobs, now)
+  if (JSON.stringify(nextCards) !== JSON.stringify(await read($, cards))) await update($, cards, () => nextCards)
+}
+
+/** Stops a run's job after the person confirms, and tells Claude, so it doesn't wait on it. */
+async function stopJob($: EngineInterface, card: RunCard): Promise<void> {
+  if (!card.job) return
+  const { name, teamspace } = card.job
+  let answer: string
+  try {
+    answer = await $.ui.ask(`Stop the Lightning job ${name}? It stops billing, and the run ends as stopped.`, [
+      'Stop it',
+      'Keep it running',
+    ])
+  } catch {
+    return // dismissed
+  }
+  if (answer !== 'Stop it') return
+  try {
+    const argv = ['lightning', 'job', 'stop', name, ...(teamspace ? ['--teamspace', teamspace] : [])]
+    const { exitCode, stderr } = await $.process.run(argv, { timeoutMs: 60_000 })
+    if (exitCode !== 0) throw new Error(stderr.trim().split('\n').at(-1) || `exit code ${exitCode}`)
+    $.ui.toast(`Stopped ${name}`)
+    tell($, `${card.run}: the user stopped job ${name} from the progress band`)
+  } catch (err) {
+    $.ui.toast(`Could not stop ${name}: ${String(err).slice(0, 120)}`, { timeoutMs: 8000 })
+  }
 }
 
 
@@ -281,8 +350,9 @@ export const register: Register = on => {
         },
       },
     })
-    // a reload killed the pollers this mod started; start them again where they left off
-    for (const w of Object.values(await read($, watchers))) void startWatch($, w.args)
+    // a reload or a restart of the session killed the pollers this mod started; start them again
+    const stored = ((await $.store.get(`watchers:${await $.session.id()}`).catch(() => undefined)) ?? {}) as Record<string, Watcher>
+    for (const w of Object.values({ ...stored, ...(await read($, watchers)) })) void startWatch($, w.args)
     $.clock.every(REFRESH_MS, () => refresh($))
     void refresh($)
     return started
@@ -300,6 +370,21 @@ export const register: Register = on => {
     return { result: first }
   })
 
+  // notes appended mid-turn reach Claude with the turn's next request; see delivery.ts
+  on('turn.start', async ($, e, next) => {
+    deliveryFor($).turnStarted()
+    return next(e)
+  })
+  on('turn.step', async function* ($, e, next) {
+    if (!e.agentId) deliveryFor($).stepStarted()
+    return yield* next(e)
+  })
+  on('turn.complete', async ($, e, next) => {
+    const out = await next(e)
+    if (!e.agentId) for (const line of deliveryFor($).turnEnded()) tell($, line)
+    return out
+  })
+
   on('skill.prompt', async ($, e, next) => {
     const out = await next(e)
     if (!PROGRESS_SKILLS.test(e.skill)) return out
@@ -307,8 +392,49 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    if (e.surface === 'desktop') {
+      const list = await read($, cards)
+      if (!list.length) return next(e)
+      const cloud = (await $.env.get('LIGHTNING_CLOUD_URL')) || undefined
+      const { Box, Button, Link, Svg, Text } = $.ui.resolve(e)
+      return (
+        <Box flexDirection="column" gap={1}>
+          {list.map(c => {
+            const url = c.job ? jobUrl(c.job, cloud) : null
+            return (
+              <Box key={`run:${c.run}`} flexDirection="column">
+                <Box flexDirection="row" gap={1}>
+                  <Text bold dimColor={c.isStale}>
+                    {c.icon} {c.run}
+                  </Text>
+                  <Text dimColor wrap="truncate">
+                    {c.headline}
+                    {c.cost ? ` · ${c.cost}` : ''}
+                  </Text>
+                </Box>
+                <Svg source={barSvg(c)} alt={barAlt(c)} width={BAR_W} height={BAR_H} />
+                {c.detail ? (
+                  <Text dimColor wrap="truncate">
+                    {c.detail}
+                  </Text>
+                ) : null}
+                {url || (c.job && !c.isFinal) ? (
+                  <Box flexDirection="row" gap={2}>
+                    {url ? <Link href={url} label="Open in Lightning" /> : null}
+                    {c.job && !c.isFinal ? (
+                      <Button key={`stop:${c.run}`} label="Stop job" onPress={() => void stopJob($, c)} />
+                    ) : null}
+                  </Box>
+                ) : null}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+    }
     const list = await read($, rows)
-    if (e.props.hasSurvey || !list.length) return next(e)
+    if (!list.length) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
