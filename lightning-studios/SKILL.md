@@ -237,6 +237,8 @@ H200 isn't on AWS). The first workflow below guards against this:
 [`lightning-jobs/progress.py`](../lightning-jobs/progress.py).** This applies to every launch,
 including one from a helper script you wrote yourself, not only the example workflow below.
 Printing log lines from a wait loop, or asking the user to `tail -f` a file, doesn't count.
+**After the conversation is compacted, load this skill again before the next launch.** The
+summary keeps how to call `progress.py`, but not this rule, so later launches go unwatched.
 
 `progress.py` ships with the `lightning-jobs` skill, which is installed next to this one (by the
 plugin and by `npx skills add`). `<LIGHTNING_JOBS_SKILL_DIR>` is the base directory Claude Code gave

@@ -391,7 +391,9 @@ events. [references/progress.md](references/progress.md) has the details of ever
 line formats, Studio logs, the bar's layout and how setbacks are classified. `<SKILL_DIR>` is
 this skill's directory, the base directory Claude Code gave when it loaded the skill. Use the
 `progress.py` there; don't search the disk for another copy, which can be older and then draws
-every bar.
+every bar. **After the conversation is compacted, load this skill again before the next launch.**
+The summary keeps how to call `progress.py`, but not that every run needs it, so later launches go
+unwatched.
 
 ```
 job ── PROGRESS 450/1000 ──► progress.py watch (background, no tokens)
