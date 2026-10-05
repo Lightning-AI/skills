@@ -246,7 +246,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             f"the status line now runs {ENTRY_SCRIPT} instead of {replaced}. If that one is the copy "
             "you meant to use, restart this watcher from it"
         )
-        append_events(d, [make_event("hint", run, f"{run}: {msg}", time.time())])
+        append_events(d, [make_event("hint", run, msg, time.time())])
         print(f"{run}: {msg}", flush=True)
 
     lock = threading.Lock()
