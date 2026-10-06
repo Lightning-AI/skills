@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.2.0](https://github.com/Lightning-AI/skills/compare/v1.1.0...v1.2.0) (2026-10-06)
+
+
+### Features
+
+* **jobs:** live job progress and event messages in Claude Code, terminal and desktop ([#48](https://github.com/Lightning-AI/skills/issues/48)) ([e6387a1](https://github.com/Lightning-AI/skills/commit/e6387a1318f2157622f30a793c60439584cc934e))
+* **jobs:** live progress bar with ETA and setback tracking ([#31](https://github.com/Lightning-AI/skills/issues/31)) ([3f4c03c](https://github.com/Lightning-AI/skills/commit/3f4c03c1eb3197334ff42d7bd54da6f48177b23f))
+
+
+### Bug fixes
+
+* **skills:** require live progress and keep status-line bars stable ([#42](https://github.com/Lightning-AI/skills/issues/42)) ([ab3b3a9](https://github.com/Lightning-AI/skills/commit/ab3b3a91c7b04231c2579e9694159f93d6d7edea))
+
+
+### Documentation
+
+* **contributing:** link Agent Skills best practices ([#45](https://github.com/Lightning-AI/skills/issues/45)) ([84e5aa2](https://github.com/Lightning-AI/skills/commit/84e5aa292637214efcd1e8eb0910fca8f3119a20))
+
+
+### Maintenance
+
+* **main:** release 1.0.0 ([#39](https://github.com/Lightning-AI/skills/issues/39)) ([8feefcc](https://github.com/Lightning-AI/skills/commit/8feefcc5de07b4e5d474152eafe5db122df72019))
+* **main:** release 1.0.0 ([#46](https://github.com/Lightning-AI/skills/issues/46)) ([5434041](https://github.com/Lightning-AI/skills/commit/5434041f14a129ff0241350a412a1d09b653a84d))
+* **plugin:** add directory icon ([#40](https://github.com/Lightning-AI/skills/issues/40)) ([5a5df0a](https://github.com/Lightning-AI/skills/commit/5a5df0a5fbf11bd7dd8d603d539fa9e00ff3686c))
+* **repo:** polish for public release and directory submission ([#37](https://github.com/Lightning-AI/skills/issues/37)) ([2f83ed0](https://github.com/Lightning-AI/skills/commit/2f83ed0d90fc9c0f85b7f629d65ec65909b5a40b))
+
 ## [1.1.0](https://github.com/Lightning-AI/skills/compare/v1.0.0...v1.1.0) (2026-10-06)
 
 
