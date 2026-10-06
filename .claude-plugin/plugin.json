@@ -26,5 +26,6 @@
     "./lightning-llm-gateway",
     "./lightning-artifacts",
     "./lightning-cost-estimation"
-  ]
+  ],
+  "types": "./types/index.d.ts"
 }

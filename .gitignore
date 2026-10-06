@@ -13,3 +13,7 @@ __pycache__/
 
 # stray patch files from git format-patch
 *.patch
+
+# types Claude Code lays beside a mod it loads from disk
+.claude-plugin/types/
+/tsconfig.json

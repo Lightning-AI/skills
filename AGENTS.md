@@ -12,6 +12,7 @@ write and test a skill itself is in [CONTRIBUTING.md](CONTRIBUTING.md).
 | `lightning-*/SKILL.md` | the skills |
 | `lightning-*/references/` | detail a skill links to, loaded only when needed |
 | `lightning-jobs/progress.py`, `lightning-jobs/job_progress/` | live job progress: poller, Monitor feed, status line |
+| `hooks/job-progress/` | the Claude Code mod: live job bars above the prompt, a `watch_job` tool, event messages to Claude |
 | `examples/` | end-to-end tasks for trying the skills; each declares its own dependencies |
 | `tests/` | unit tests for the scripts |
 | `pyproject.toml` | settings for ruff, pyright, pydoclint and Import Linter (nothing to install) |
@@ -55,6 +56,28 @@ uv run --no-project --python 3.9 python -m unittest discover -s tests
 (pyright), and it writes to `~/.cache/pre-commit` and `~/.cache/uv`. Claude Code's sandbox has
 been seen to abort pre-commit's `git fetch` even with `github.com` allowed, so run that first
 install outside the sandbox. Later runs reuse the cached environments.
+
+## The Claude Code mod
+
+`hooks/hooks.json` loads `hooks/job-progress/register.tsx` into Claude Code (CLI and desktop app),
+which shows the files `progress.py` writes as bars above the prompt and messages Claude about the
+events that need a reply. It starts `lightning job watch --json` for jobs where the installed CLI has
+it (the same files, events read straight off its output), else `progress.py watch` and
+`progress.py events`. Other agents never load it, so the skills and scripts must keep working
+without it. It is TypeScript, run by Claude Code itself, so nothing is installed. Check it with:
+
+```bash
+claude plugin validate .claude-plugin/plugin.json   # the module as Claude Code reads it
+claude plugin test .                                # hooks/job-progress/*.test.ts(x)
+claude --plugin-dir .                               # try it in a session
+```
+
+The terminal draws `render.ts`'s ASCII rows. The desktop app draws `desktop.ts`'s cards: an SVG bar
+with a stage timeline, a link to the job and a stop button. `delivery.ts` decides how a note reaches
+Claude: into the running turn when it's busy, as a turn of its own when it's idle.
+
+`render.ts` is a port of `job_progress/statusline.py`: change both together. Its tests hold the
+Python status line's output for the same states, so regenerate them when the bars change.
 
 ## Rules for scripts
 
