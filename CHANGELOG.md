@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.0](https://github.com/Lightning-AI/skills/compare/v1.0.0...v1.0.0) (2026-10-06)
+
+
+### Features
+
+* **jobs:** live job progress and event messages in Claude Code, terminal and desktop ([#48](https://github.com/Lightning-AI/skills/issues/48)) ([e6387a1](https://github.com/Lightning-AI/skills/commit/e6387a1318f2157622f30a793c60439584cc934e))
+
+
+### Bug fixes
+
+* **skills:** require live progress and keep status-line bars stable ([#42](https://github.com/Lightning-AI/skills/issues/42)) ([ab3b3a9](https://github.com/Lightning-AI/skills/commit/ab3b3a91c7b04231c2579e9694159f93d6d7edea))
+
+
+### Documentation
+
+* **contributing:** link Agent Skills best practices ([#45](https://github.com/Lightning-AI/skills/issues/45)) ([84e5aa2](https://github.com/Lightning-AI/skills/commit/84e5aa292637214efcd1e8eb0910fca8f3119a20))
+
 ## 1.0.0 (2026-09-29)
 
 
