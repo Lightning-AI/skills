@@ -218,6 +218,7 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
       let first: string | null = null
       let run: string | null = null
       let isCounted = false
+      let hasEnded = false
       const settle = () => {
         if (isCounted) sdkStarting -= 1
         isCounted = false
@@ -236,21 +237,26 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
         for await (const line of lines(child)) {
           const e = viaSdk ? parseWatchLine(line) : null
           if (first === null) {
-            settle()
             first = viaSdk ? (e?.msg ?? line) : line
             resolve(first)
+          }
+          // the run comes from its `watching` line, which may follow a hint or a warning
+          if (run === null) {
             run = viaSdk ? (e?.kind === 'watching' ? (e.run ?? null) : null) : (/^run (\S+): watching/.exec(line)?.[1] ?? null)
             if (run) {
+              settle()
               // this child is the run's feed; restarted after a reload, it carries on as the same run
               if (viaSdk) feeds.add(run)
               const again = args.includes('--run') ? args : [...args, '--run', run]
               await keepWatchers($, w => ({ ...w, [run!]: { args: again } }))
+              continue
             }
-            continue
           }
           if (e?.msg && isWanted(e.kind, hasBar)) tell($, e.msg)
         }
-        const { code } = await child.result
+        const { code, signal } = await child.result
+        // killed (a reload or a restart of the session) rather than done: keep it saved to start again
+        hasEnded = signal === null
         if (first === null) resolve(`the poller exited with code ${code} before it started; check its arguments`)
       } catch (err) {
         resolve(`could not start the poller: ${String(err)}`)
@@ -258,7 +264,7 @@ function startWatch($: EngineInterface, args: string[]): Promise<string> {
         settle()
         if (run) {
           feeds.delete(run)
-          await keepWatchers($, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
+          if (hasEnded) await keepWatchers($, w => Object.fromEntries(Object.entries(w).filter(([k]) => k !== run)))
         }
       }
     })()
@@ -532,8 +538,8 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
-        {list.slice(0, e.props.maxRows).map(r => (
-          <Text dimColor={r.isStale} wrap="truncate">
+        {list.slice(0, e.props.maxRows).map((r, i) => (
+          <Text key={i} dimColor={r.isStale} wrap="truncate">
             {r.text}
           </Text>
         ))}

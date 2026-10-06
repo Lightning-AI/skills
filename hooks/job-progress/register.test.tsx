@@ -80,10 +80,11 @@ describe('skill note', () => {
 })
 
 /** A session with the state files above, started, its first refresh done. */
-async function started($: Engine, on: On, store: Record<string, unknown> = {}) {
+async function started($: Engine, on: On, store: Record<string, unknown> | null = {}) {
   const clock = mock.clock(on, { now: NOW_MS })
   mock.env(on, { LIGHTNING_PROGRESS_DIR: DIR })
-  mock.store(on, store)
+  // null: the test keeps its own store
+  if (store) mock.store(on, store)
   on('session.id', async () => ({ value: 'this-session' }))
   on('session.surfaces', async () => ({ value: ['terminal'] }))
   on('tool.register', async (_$, e) => ({ value: { tool: `mcp__lightning__${e.name}` } }))
@@ -137,6 +138,57 @@ describe('the band', () => {
     })
     await started($, on, { 'watchers:this-session': { 'train-run': { args: ['train-run', '--run', 'train-run'] } } })
     expect(spawned.some(a => a.join(' ').includes('watch train-run --run train-run'))).toBe(true)
+  })
+
+  test('a poller killed by a reload stays saved; one that ends is forgotten', async ($, on) => {
+    let signal: string | null = 'SIGTERM'
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.spawn', async function* () {
+      yield { stream: 'stdout' as const, text: JSON.stringify({ kind: 'watching', run: 'r', msg: 'r: watching' }) + '\n' }
+      return { value: { code: signal ? null : 0, signal } as never }
+    })
+    const store: Record<string, unknown> = {}
+    on('store.get', async (_$, e) => ({ value: store[e.key] }) as never)
+    on('store.set', async (_$, e) => {
+      store[e.key] = e.value
+      return { value: undefined } as never
+    })
+    on('store.delete', async (_$, e) => {
+      delete store[e.key]
+      return { value: undefined } as never
+    })
+    const clock = await started($, on, null)
+    await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
+    await clock.settle()
+    expect(store['watchers:this-session']).toEqual({ r: { args: ['train-run', '--relaunch-wait', expect.any(String), '--run', 'r'] } })
+    signal = null
+    await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
+    await clock.settle()
+    expect(store['watchers:this-session']).toBeUndefined()
+  })
+
+  test('the SDK watcher finds its run on a later watching line', async ($, on) => {
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+    on('process.spawn', async function* () {
+      yield { stream: 'stdout' as const, text: '{"kind":"hint","msg":"log in first"}\n' }
+      yield { stream: 'stdout' as const, text: JSON.stringify({ kind: 'watching', run: 'r', msg: 'r: watching' }) + '\n' }
+      return { value: { code: null, signal: 'SIGTERM' } as never }
+    })
+    const store: Record<string, unknown> = {}
+    on('store.get', async (_$, e) => ({ value: store[e.key] }) as never)
+    on('store.set', async (_$, e) => {
+      store[e.key] = e.value
+      return { value: undefined } as never
+    })
+    on('store.delete', async (_$, e) => {
+      delete store[e.key]
+      return { value: undefined } as never
+    })
+    const clock = await started($, on, null)
+    const out = await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
+    await clock.settle()
+    expect((out as { result?: unknown }).result).toBe('log in first')
+    expect(Object.keys(store['watchers:this-session'] as object)).toEqual(['r'])
   })
 
   test('stop asks first, then stops the job and tells Claude', async ($, on) => {
