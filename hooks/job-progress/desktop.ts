@@ -14,7 +14,8 @@ import {
   type RunState,
 } from './render'
 
-export const MAX_CARDS = 4
+// a fourth card no longer fits the band; the rest are counted on a line below the cards
+export const MAX_CARDS = 3
 export const BAR_W = 480
 export const BAR_H = 12
 
@@ -116,6 +117,13 @@ export function toCards(states: RunState[], jobs: Record<string, JobRef>, now: n
     .map(s => toCard(s, jobs[s.run] ?? null, now))
 }
 
+/** How many shown runs didn't get a card. */
+export const hiddenCards = (states: RunState[], now: number): number =>
+  Math.max(0, states.filter(s => isShown(s, now)).length - MAX_CARDS)
+
+/** The line under the cards that counts the runs without one. */
+export const moreLine = (n: number): string => `+${n} more run${n > 1 ? 's' : ''}`
+
 /** The job's page on Lightning, as the SDK's `Job.link` builds it. */
 export function jobUrl(job: NonNullable<JobRef>, cloud = 'https://lightning.ai'): string | null {
   if (!job.teamspace || !job.teamspace.includes('/')) return null
@@ -127,15 +135,21 @@ export function jobUrl(job: NonNullable<JobRef>, cloud = 'https://lightning.ai')
 const esc = (t: string) =>
   t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
-const rect = (x: number, w: number, fill: string, opacity = 1, inner = '') =>
+const rect = (x: number, w: number, fill: string, opacity = 1) =>
   w <= 0
     ? ''
     : `<rect x="${x.toFixed(1)}" y="0" width="${w.toFixed(1)}" height="${BAR_H}" rx="3" fill="${fill}"` +
       (opacity < 1 ? ` fill-opacity="${opacity}"` : '') +
-      (inner ? `>${inner}</rect>` : '/>')
+      '/>'
 
-// a slow pulse on a stage or run that has started but not reported progress yet
-const PULSE = '<animate attributeName="fill-opacity" values="0.25;0.6;0.25" dur="2s" repeatCount="indefinite"/>'
+// a stage or run that has started but not reported progress yet: a dashed outline with a slow
+// pulse, since a faint full-width fill reads as a full bar on the dark theme
+const PULSE = '<animate attributeName="stroke-opacity" values="0.4;1;0.4" dur="2s" repeatCount="indefinite"/>'
+const waiting = (x: number, w: number, stroke: string) =>
+  w <= 0
+    ? ''
+    : `<rect x="${(x + 0.5).toFixed(1)}" y="0.5" width="${(w - 1).toFixed(1)}" height="${BAR_H - 1}" rx="3" ` +
+      `fill="none" stroke="${stroke}" stroke-width="1" stroke-dasharray="4 3">${PULSE}</rect>`
 
 function fillColor(c: RunCard): string {
   if (c.phase === 'done') return COLOR.done
@@ -159,7 +173,7 @@ export function barSvg(c: RunCard): string {
       let seg = rect(x, w, COLOR.track, 0.25)
       if (st.state === 'done') seg = rect(x, w, COLOR.done)
       else if (st.state === 'active' && st.fraction !== null) seg += rect(x, w * st.fraction, fillColor(c))
-      else if (st.state === 'active') seg = c.isFinal ? rect(x, w, fillColor(c), 0.6) : rect(x, w, fillColor(c), 0.25, PULSE)
+      else if (st.state === 'active') seg = c.isFinal ? rect(x, w, fillColor(c), 0.6) : rect(x, w, COLOR.track, 0.25) + waiting(x, w, fillColor(c))
       parts.push(`<g>${title}${seg}</g>`)
     })
   } else {
@@ -167,7 +181,7 @@ export function barSvg(c: RunCard): string {
     parts.push(rect(0, BAR_W, COLOR.track, 0.25))
     if (c.peak !== null && c.peak > f) parts.push(rect(BAR_W * f, BAR_W * (c.peak - f), COLOR.lost, 0.7))
     if (c.fraction === null && !c.isFinal && c.phase !== 'pending') {
-      parts.push(rect(0, BAR_W, fillColor(c), 0.25, PULSE))
+      parts.push(waiting(0, BAR_W, fillColor(c)))
     } else {
       parts.push(rect(0, BAR_W * f, fillColor(c)))
     }

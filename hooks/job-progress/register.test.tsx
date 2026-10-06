@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { isWanted, parseWatchLine, skillNote, watchArgs } from './register'
+import { guardCommand, isWanted, NUDGE, parseWatchLine, reportsProgress, skillNote, watchArgs } from './register'
 
 const DIR = '/state/lightning-progress'
 const NOW_MS = 10_000_000
@@ -242,4 +242,54 @@ test('an event reaches an idle Claude as a turn of its own', async ($, on) => {
   await $.tool.call({ tool: 'mcp__lightning__watch_job', job: 'train-run' } as never)
   await clock.advance(2000)
   expect(sent).toEqual(['Lightning job progress:\n- r: attempt 2 after OOM'])
+})
+
+describe('pollers started by hand', () => {
+  test('a poller or event feed started by hand is turned away toward watch_job', () => {
+    // the session dump: Bash pollers that broke on quoting, and Monitors that repeated the notes
+    const py = 'python3 /x/lightning-jobs/progress.py'
+    expect(guardCommand(`export DEBUG=0; ${py} watch --studio g0 --log recipe/g1.log`)).toContain('mcp__lightning__watch_job')
+    expect(guardCommand('lightning job watch g2-s0 --json')).toContain('mcp__lightning__watch_job')
+    expect(guardCommand(`sleep 20; ${py} events --run g1 --all`)).toContain('No Monitor needed')
+    expect(guardCommand(`${py} statusline`)).toBeNull()
+    expect(guardCommand(`${py} abandon g1`)).toBeNull()
+  })
+
+  test('progress markers with no poller are spotted', () => {
+    expect(reportsProgress('tail -f out | grep PROGRESS_EXIT', '')).toBe(true)
+    expect(reportsProgress('tail -n 15 smoke.log', '09:34:05 PROGRESS 10/40')).toBe(true)
+    expect(reportsProgress('ls', 'nothing')).toBe(false)
+    expect(reportsProgress('python3 progress.py watch --studio s --log PROGRESS.log', '')).toBe(false)
+  })
+
+  test('Bash: a hand-started poller is refused; a watched run gets no reminder', async ($, on) => {
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: 'PROGRESS 10/40', text: 'PROGRESS 10/40' }) as never)
+    await started($, on)
+    // this session's run has a fresh state file, so it counts as watched: no reminder
+    const denied = await $.tool.call({ tool: 'Bash', command: 'python3 progress.py watch train-run' } as never)
+    expect((denied as { deny?: string }).deny).toContain('watch_job')
+    const out = await $.tool.call({ tool: 'Bash', command: 'tail -n 5 smoke.log' } as never)
+    expect((out as { context?: string[] }).context ?? []).not.toContain(NUDGE)
+  })
+})
+
+
+test('a run that prints PROGRESS with no poller gets a reminder, at most every 10 minutes', async ($, on) => {
+  // the session dump: G2 ran for hours, followed by Claude's own log tails, with no bar
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: 'x', text: '09:34:05 PROGRESS 10/40' }) as never)
+  const clock = mock.clock(on, { now: NOW_MS })
+  mock.env(on, { LIGHTNING_PROGRESS_DIR: DIR })
+  mock.store(on, {})
+  on('session.id', async () => ({ value: 'this-session' }))
+  on('session.surfaces', async () => ({ value: ['desktop'] }))
+  on('tool.register', async (_$, e) => ({ value: { tool: `mcp__lightning__${e.name}` } }))
+  on('fs.list', async () => ({ value: [] }))
+  on('session.start', async (_$, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  await clock.settle()
+  const tail = () => $.tool.call({ tool: 'Bash', command: 'tail -n 15 smoke.out' } as never) as Promise<{ context?: string[] }>
+  expect((await tail()).context).toEqual([NUDGE])
+  expect((await tail()).context ?? []).toEqual([])
+  await clock.advance(10 * 60 * 1000)
+  expect((await tail()).context).toEqual([NUDGE])
 })

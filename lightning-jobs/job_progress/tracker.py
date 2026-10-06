@@ -14,6 +14,10 @@ from .core import fmt_duration, make_event, pct
 
 RECOVERY_SAMPLES = 3
 RATE_WINDOW = 10
+# log lines reach the poller in batches (a job's log is polled, a Studio log read in chunks), so
+# readings that arrive this close together are one sample: their arrival times say nothing about
+# when the job printed them, and a batch of steps "done" in milliseconds made the ETA seconds long
+BURST_S = 2.0
 PROGRESS_RE = re.compile(r"\bPROGRESS\s+(\d+)\s*/\s*(\d+)(?:.*?\battempt=(\d+))?")
 TQDM_RE = re.compile(r"(\d{1,3})%\|[^|]*\|\s*(\d+)/(\d+)")
 EPOCH_RE = re.compile(r"\bEpoch\s+(\d+)")
@@ -355,7 +359,10 @@ def on_sample(s: dict[str, Any], r: dict[str, Any], at: float) -> list[dict[str,
         s["attempt"] = r["attempt"]
     if s["peak"] is None or (r["epoch"] or 0, r["step"]) > (s["peak_epoch"] or 0, s["peak"]):
         s["peak"], s["peak_epoch"] = r["step"], r["epoch"]
-    s["samples"] = (s["samples"] + [[at, r["step"]]])[-RATE_WINDOW:]
+    if s["samples"] and at - s["samples"][-1][0] < BURST_S:
+        s["samples"][-1] = [s["samples"][-1][0], r["step"]]
+    else:
+        s["samples"] = (s["samples"] + [[at, r["step"]]])[-RATE_WINDOW:]
     s["since_reset"] += 1
     s["attempt_fresh"] = False
 

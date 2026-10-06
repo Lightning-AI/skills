@@ -162,6 +162,14 @@ def same_workload(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return a.get("teamspace") == b.get("teamspace")
 
 
+def taken_by(d: Path, run: str) -> str | None:
+    """The other Claude Code session whose run this name already is, if any. A run started outside
+    Claude Code, or by this session, is free to continue."""
+    me = session_id()
+    owner = (read_json(d / "runs" / f"{run}.json") or {}).get("session")
+    return owner if me and owner and owner != me else None
+
+
 def default_run(d: Path, base: str, entry: dict[str, Any]) -> tuple[str, bool]:
     """(run name, start fresh) for a watch without --run: `base` unless another workload holds it.
 
@@ -199,6 +207,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
     # the resolved teamspace, not the flag: the configured default can change while this runs
     entry.update(teamspace=teamspace, teamspace_id=teamspace_id, added_at=time.time())
     run, fresh = (args.run, False) if args.run else default_run(d, base, entry)
+    owner = taken_by(d, run)
+    if args.run and owner:
+        # run names are shared by every session on the machine: continuing another session's run
+        # merges two unrelated workloads into one bar, history and setbacks
+        sys.exit(
+            f"run {run} belongs to another Claude Code session ({owner}); "
+            "pick a new --run name, or leave --run out to get one"
+        )
     run_path, state_path = d / "runs" / f"{run}.json", d / "state" / f"{run}.json"
     runfile = (None if fresh else read_json(run_path)) or {
         "run": run,

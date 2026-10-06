@@ -8,11 +8,12 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { RunCard, Watcher } from '../../types'
 import { createDelivery } from './delivery'
-import { BAR_H, BAR_W, barAlt, barSvg, jobUrl, toCards, type JobRef } from './desktop'
-import { FINAL_VISIBLE_FOR, isFinal, renderAll, type RunState } from './render'
+import { BAR_H, BAR_W, barAlt, barSvg, hiddenCards, jobUrl, moreLine, toCards, type JobRef } from './desktop'
+import { FINAL_VISIBLE_FOR, isFinal, isStale, renderAll, type RunState } from './render'
 
 const rows = atom({ plugin: 'lightning', key: 'rows' } as const, [])
 const cards = atom({ plugin: 'lightning', key: 'cards' } as const, [])
+const moreCards = atom({ plugin: 'lightning', key: 'moreCards' } as const, 0)
 const watchers = atom({ plugin: 'lightning', key: 'watchers' } as const, {})
 
 const TOOL = 'watch_job'
@@ -26,6 +27,12 @@ const PROGRESS_SKILLS = /(^|:)lightning-(jobs|studios)$/
 const STATUS_LINE_HINT = /status[- ]line/
 // progress the bars already show (job_progress/events.py ROUTINE_KINDS)
 const ROUTINE_KINDS = ['milestone', 'stage', 'started', 'recovered', 'watching']
+// a poller or event feed started by hand, which the mod does better (see guardCommand)
+const HAND_WATCH = /(progress\.py['"]?\s+watch|lightning\s+job\s+watch)\b/
+const HAND_EVENTS = /progress\.py['"]?\s+events\b/
+// what a run prints for the poller (the skill's progress protocol)
+const PROGRESS_MARK = /\bPROGRESS(_PHASE|_EXIT)?\b/
+const NUDGE_EVERY_MS = 10 * 60 * 1000
 
 type RunFile = { session?: string | null; jobs?: { kind?: string; name?: string; teamspace?: string | null }[] }
 
@@ -84,6 +91,9 @@ let sdkWatch: boolean | null = null
 let sdkStarting = 0
 let isFlushing = false
 let delivery: ReturnType<typeof createDelivery> | null = null
+// this session's runs whose poller is alive, as the last refresh saw them
+let liveRuns = 0
+let lastNudgeMs = 0
 
 async function stateDir($: EngineInterface): Promise<string> {
   const own = await $.env.get('LIGHTNING_PROGRESS_DIR')
@@ -279,6 +289,7 @@ async function refresh($: EngineInterface): Promise<void> {
   }
   const states: RunState[] = []
   const jobs: Record<string, JobRef> = {}
+  let live = 0
   for (const f of entries) {
     if (f.kind !== 'file' || !f.name.endsWith('.json') || nowMs - f.mtimeMs > FINAL_VISIBLE_FOR * 1000) continue
     try {
@@ -289,16 +300,20 @@ async function refresh($: EngineInterface): Promise<void> {
       states.push(s)
       const last = runfile.jobs?.at(-1)
       if (last?.kind === 'job' && last.name) jobs[s.run] = { name: last.name, teamspace: last.teamspace ?? null }
+      if (runfile.session === session && !isFinal(s) && !isStale(s, nowMs / 1000)) live += 1
       if (runfile.session === session && !isFinal(s) && !feeds.has(s.run) && !sdkStarting) startFeed($, s.run)
     } catch {
       // a state file mid-write; the next tick reads it
     }
   }
+  liveRuns = live
   const now = nowMs / 1000
   const next = renderAll(states, now)
   if (JSON.stringify(next) !== JSON.stringify(await read($, rows))) await update($, rows, () => next)
   const nextCards = toCards(states, jobs, now)
   if (JSON.stringify(nextCards) !== JSON.stringify(await read($, cards))) await update($, cards, () => nextCards)
+  const more = hiddenCards(states, now)
+  if (more !== (await read($, moreCards))) await update($, moreCards, () => more)
 }
 
 /** Stops a run's job after the person confirms, and tells Claude, so it doesn't wait on it. */
@@ -326,6 +341,45 @@ async function stopJob($: EngineInterface, card: RunCard): Promise<void> {
   }
 }
 
+/** A Bash or Monitor command that starts a poller or an event feed by hand, which the mod does
+ * itself: the refusal Claude reads, or null. A hand-started poller needs the sandbox lifted and
+ * breaks on shell quoting; a Monitor on the events repeats the notes the mod already sends. The
+ * skill's own note says this, but only where its text reaches Claude. */
+export function guardCommand(command: string): string | null {
+  if (HAND_WATCH.test(command)) {
+    return (
+      `The lightning plugin's job-progress mod is loaded: start the poller with the \`mcp__lightning__${TOOL}\` ` +
+      'tool instead (load it with ToolSearch `select:mcp__lightning__watch_job` if needed). It takes the same ' +
+      'arguments as `progress.py watch` (job, or studio and log; run, teamspace, note), runs outside the sandbox, ' +
+      'draws the bars and sends you the events that need a reply. One call per job; skip the Monitor.'
+    )
+  }
+  if (HAND_EVENTS.test(command)) {
+    return (
+      "No Monitor needed: the lightning plugin's job-progress mod already follows this run's events and sends " +
+      'you each one that needs a reply. Start pollers with `mcp__lightning__watch_job`.'
+    )
+  }
+  return null
+}
+
+/** Whether a command or its output shows a run reporting progress for a poller. */
+export const reportsProgress = (command: string, output: string): boolean =>
+  !HAND_WATCH.test(command) && !HAND_EVENTS.test(command) && (PROGRESS_MARK.test(command) || PROGRESS_MARK.test(output))
+
+export const NUDGE =
+  'This run reports PROGRESS lines, but no progress poller is watching any run of this session, so the ' +
+  `person sees no bar. Start one now with \`mcp__lightning__${TOOL}\` (a job name, or studio and log), ` +
+  'one per job or log, rather than following the log yourself.'
+
+/** The reminder for a call whose run has no poller, at most every NUDGE_EVERY_MS. */
+async function nudgeFor($: EngineInterface, command: string, output: string): Promise<string | null> {
+  if (liveRuns || !reportsProgress(command, output)) return null
+  const now = await $.clock.now().catch(() => 0)
+  if (!now || now - lastNudgeMs < NUDGE_EVERY_MS) return null
+  lastNudgeMs = now
+  return NUDGE
+}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -370,6 +424,29 @@ export const register: Register = on => {
     return { result: first }
   })
 
+  // a step that calls a tool is followed by another request, which reads the notes held for it
+  on('tool.call', async ($, e, next) => {
+    // a failure here must not hold up the tool
+    if (!e.agentId) await deliveryFor($).toolStarted().catch(err => $.ui.log(`could not pass on the held notes: ${String(err)}`, { to: 'debug' }))
+    return next(e)
+  })
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const deny = guardCommand(e.command)
+    if (deny) return { deny }
+    const out = await next(e)
+    const nudge = 'deny' in out && out.deny ? null : await nudgeFor($, e.command, out.text ?? '')
+    return nudge ? { ...out, context: [...(out.context ?? []), nudge] } : out
+  })
+
+  on('tool.call', { tool: 'Monitor' }, async ($, e, next) => {
+    const deny = e.command ? guardCommand(e.command) : null
+    if (deny) return { deny }
+    const out = await next(e)
+    const nudge = e.command && !('deny' in out && out.deny) ? await nudgeFor($, e.command, '') : null
+    return nudge ? { ...out, context: [...(out.context ?? []), nudge] } : out
+  })
+
   // notes appended mid-turn reach Claude with the turn's next request; see delivery.ts
   on('turn.start', async ($, e, next) => {
     deliveryFor($).turnStarted()
@@ -396,6 +473,7 @@ export const register: Register = on => {
     if (e.surface === 'desktop') {
       const list = await read($, cards)
       if (!list.length) return next(e)
+      const more = await read($, moreCards)
       const cloud = (await $.env.get('LIGHTNING_CLOUD_URL')) || undefined
       const { Box, Button, Link, Svg, Text } = $.ui.resolve(e)
       return (
@@ -430,6 +508,7 @@ export const register: Register = on => {
               </Box>
             )
           })}
+          {more ? <Text dimColor>{moreLine(more)}</Text> : null}
         </Box>
       )
     }

@@ -43,6 +43,8 @@ declare module 'claude-code' {
     lightning: {
       rows: BandRow[]
       cards: RunCard[]
+      /** Shown runs past the cards' limit, counted on a line below them. */
+      moreCards: number
       watchers: Record<string, Watcher>
     }
   }
