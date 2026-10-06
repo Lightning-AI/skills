@@ -189,13 +189,21 @@ FAMILY = "H100"   # the GPU family the workload needs
 # Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
         for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
-for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0)):
+for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0))[:15]:
     print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
 ```
 
 `cost` is USD per hour and `wait_time` the expected seconds until a machine is free.
 `list_machines()` with no argument merges several accounts without saying which row belongs to
-which. Show the user the top rows with price and wait. **Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
+which. Show the user the top rows with price and wait: the head of the sorted list, never the tail, and
+check its first row against the request before anything else.
+
+**Prefer Lightning's own accounts (`lightning-baremetal`, `lightning-public-prod`).** Dev and test
+accounts can list GPUs they can't start: a broken region, a bare HTTP 500, `no price available`, or
+a Studio that boots without its GPU. A `wait_time` of exactly 300 or 10800 s is a placeholder, not
+an estimate. When an account fails to start, take the next row instead of retrying it.
+
+**Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
 per hour and the most the run can cost under its deadline. Ask even when the user named the GPU
 or gave a budget: a budget is a limit, not approval to spend it.
 
@@ -483,6 +491,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`studio.switch_machine()` can raise `ApiException (400) … "cannot switch to a Studio"` and still
   switch.** Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*;
   don't restart or re-switch on it.
+- **Don't assume the folder a command starts in.** `cd` to the absolute path the upload landed in,
+  as in *Example workflows*, and `ls` the script there before the real run.
 - **Detach with `nohup … </dev/null >/dev/null 2>&1`.** Without the redirects, every later
   `studio.run*()` output starts with `nohup: ignoring input`, which floods a log monitor.
 - **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character (`tail -c N` on a log with `é` or a progress bar, `head -c` on a text file) fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
