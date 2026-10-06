@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { barAlt, barSvg, jobUrl, toCard, toCards } from './desktop'
+import { barAlt, barSvg, hiddenCards, jobUrl, MAX_CARDS, moreLine, toCard, toCards } from './desktop'
 import type { RunState } from './render'
 
 const NOW = 10_000
@@ -58,6 +58,16 @@ describe('cards', () => {
     expect(svg).toContain('<title>humaneval · 2m56s</title>')
   })
 
+  test('no progress yet is a dashed outline, never a fill that reads as a full bar', () => {
+    // the screenshot: g2-s0-replay-half at 0% looked like a full bar on the dark theme
+    const run = barSvg(toCard({ ...base, phase: 'starting' }, null, NOW))
+    expect(run).toContain('stroke-dasharray')
+    expect(run).not.toMatch(/width="480\.0"[^>]*fill="#3b82f6"/)
+    const stage = barSvg(toCard(staged, null, NOW))
+    expect(stage).toContain('stroke-dasharray')
+    expect(stage).not.toContain('fill="#3b82f6"')
+  })
+
   test('a setback shades the ground lost between now and the peak', () => {
     const c = toCard({ ...base, step: 300, total: 1000, peak: 600, eta_s: 900, setbacks: [{}], lost_s: 95 }, null, NOW)
     expect(c.fraction).toBe(0.3)
@@ -83,6 +93,16 @@ describe('cards', () => {
     const old = { ...base, run: 'old', phase: 'done', finished_at: NOW - 3600 }
     const done = { ...base, run: 'setup', phase: 'done', finished_at: NOW - 5 }
     expect(toCards([done, old, staged], {}, NOW).map(c => c.run)).toEqual(['eval-base', 'setup'])
+  })
+
+  test('three cards at most, and a line counting the rest', () => {
+    const runs = ['a', 'b', 'c', 'd', 'e'].map((run, i) => ({ ...base, run, started_at: NOW - 100 + i }))
+    expect(toCards(runs, {}, NOW).map(c => c.run)).toEqual(['a', 'b', 'c'])
+    expect(MAX_CARDS).toBe(3)
+    expect(hiddenCards(runs, NOW)).toBe(2)
+    expect(hiddenCards(runs.slice(0, 3), NOW)).toBe(0)
+    expect(moreLine(2)).toBe('+2 more runs')
+    expect(moreLine(1)).toBe('+1 more run')
   })
 
   test('stage names are escaped in the SVG', () => {

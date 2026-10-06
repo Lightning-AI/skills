@@ -96,6 +96,18 @@ class Progress(unittest.TestCase):
             [f"train-42: {p}%" for p in (10, 20, 30, 40, 50)],
         )
 
+    def test_batched_lines_give_the_right_eta(self):
+        # the live G2 job: the poller read 90 steps of backlog in one batch, then a batch every 30s;
+        # arrival times made that "2% · ETA 11s" on a ~2h run
+        r = Run()
+        for step in range(1, 91):
+            r.line(T0 + step * 0.001, f"PROGRESS {step}/3032")
+        self.assertIsNone(r.s["eta_s"])  # one batch is one sample: no rate yet
+        for i in range(1, 3):
+            r.line(T0 + 30 * i, f"PROGRESS {90 + 12 * i}/3032")
+        self.assertAlmostEqual(r.s["rate"], 0.4, places=2)
+        self.assertGreater(r.s["eta_s"], 7000)
+
     def test_reconnect_replay_is_ignored(self):
         r = Run()
         for i in range(5):
@@ -741,6 +753,19 @@ class ReviewFindings(unittest.TestCase):
         store.write_json(d / "runs" / "log.json", {"run": "log", "jobs": [s1], "pid": None})
         s2 = {**s1, "name": "s2:train.log", "studio": "s2"}
         self.assertEqual(watch.default_run(d, "log", s2), ("log@s2", True))
+
+    def test_another_sessions_run_name_is_not_taken_over(self):
+        # the session dump: a math-9b session's `--run g1` merged its log into a G2 session's G1
+        d = Path(tempfile.mkdtemp())
+        store.ensure_dirs(d)
+        store.write_json(d / "runs" / "g1.json", {"run": "g1", "jobs": [], "session": "theirs"})
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "mine"}):
+            self.assertEqual(watch.taken_by(d, "g1"), "theirs")
+            self.assertIsNone(watch.taken_by(d, "new-run"))
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "theirs"}):
+            self.assertIsNone(watch.taken_by(d, "g1"))  # its own session relaunches into it
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            self.assertIsNone(watch.taken_by(d, "g1"))  # outside Claude Code, as before
 
     def test_the_resolved_teamspace_tells_workloads_apart(self):
         ts = types.SimpleNamespace(name="a", id="ts-a", owner=types.SimpleNamespace(name="org"))

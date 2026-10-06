@@ -34,13 +34,39 @@ describe('delivery', () => {
     expect(submitted).toHaveLength(0)
   })
 
-  test('a turn that ends before reading the note hands it back', async () => {
-    const { d } = fixture()
+  test('while Claude writes a reply with no tool call, the note waits for the turn to end', async () => {
+    // the session dump's duplicates: appended there, the note stayed in the conversation and went again
+    const { d, appended, submitted } = fixture()
     d.turnStarted()
     d.stepStarted()
-    await d.deliver(['r: stalled 6m'])
+    expect(await d.deliver(['r: stalled 6m'])).toBe('held')
     expect(d.turnEnded()).toEqual(['r: stalled 6m'])
     expect(await d.deliver(['r: stalled 6m'])).toBe('submitted')
+    expect(appended).toHaveLength(0)
+    expect(submitted).toHaveLength(1)
+  })
+
+  test('a held note joins the turn at the step’s first tool call', async () => {
+    const { d, appended } = fixture()
+    d.turnStarted()
+    d.stepStarted()
+    await d.deliver(['r: failed'])
+    await d.toolStarted()
+    expect(appended).toEqual(['Lightning job progress:\n- r: failed'])
+    // once a tool ran, later notes go straight in: another request follows
+    expect(await d.deliver(['r: retry'])).toBe('appended')
+    d.stepStarted()
+    expect(d.turnEnded()).toEqual([])
+  })
+
+  test('a held note whose append is refused still reaches Claude', async () => {
+    const { d, submitted } = fixture(false)
+    d.turnStarted()
+    d.stepStarted()
+    await d.deliver(['r: failed'])
+    await d.toolStarted()
+    expect(d.turnEnded()).toEqual(['r: failed'])
+    expect(submitted).toHaveLength(0)
   })
 
   test('mid-turn, a refused append still reaches Claude', async () => {

@@ -74,7 +74,9 @@ teamspace; then it gets a qualifier, e.g. `train-run-42@my-org-other-ts`. The te
 one the job resolved to, so watching without `--teamspace` and then changing the configured
 default can't mix up two jobs. Use the printed name
 for `events --run` and `abandon`. A finished run under that name starts over; only an explicit
-`--run` continues one (step 5).
+`--run` continues one (step 5), and only a run of the same Claude Code session (or one started
+outside Claude Code): run names are shared by every session on the machine, so `--run` on another
+session's run is refused. Pick a new name then.
 
 `watch` waits through `Pending`, follows the logs while the job runs, and exits once the run is
 final. State goes to `~/.local/state/lightning-progress/`, so it doesn't matter which directory
