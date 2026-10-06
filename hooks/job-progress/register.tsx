@@ -27,11 +27,13 @@ const PROGRESS_SKILLS = /(^|:)lightning-(jobs|studios)$/
 const STATUS_LINE_HINT = /status[- ]line/
 // progress the bars already show (job_progress/events.py ROUTINE_KINDS)
 const ROUTINE_KINDS = ['milestone', 'stage', 'started', 'recovered', 'watching']
-// a poller or event feed started by hand, which the mod does better (see guardCommand)
+// a poller or event feed started by hand, which the mod does better (see handNote)
 const HAND_WATCH = /(progress\.py['"]?\s+watch|lightning\s+job\s+watch)\b/
 const HAND_EVENTS = /progress\.py['"]?\s+events\b/
-// what a run prints for the poller (the skill's progress protocol)
-const PROGRESS_MARK = /\bPROGRESS(_PHASE|_EXIT)?\b/
+// a line a run prints for the poller (the skill's progress protocol), not the word in prose
+const PROGRESS_LINE = /\bPROGRESS\s+\d+\s*\/\s*\d+|\bPROGRESS_PHASE\s+\S|\bPROGRESS_EXIT\s+-?\d/
+// a Monitor that picks those lines out of a log
+const PROGRESS_FILTER = /\bPROGRESS(_PHASE|_EXIT)?\b/
 const NUDGE_EVERY_MS = 10 * 60 * 1000
 
 type RunFile = { session?: string | null; jobs?: { kind?: string; name?: string; teamspace?: string | null }[] }
@@ -94,6 +96,7 @@ let delivery: ReturnType<typeof createDelivery> | null = null
 // this session's runs whose poller is alive, as the last refresh saw them
 let liveRuns = 0
 let lastNudgeMs = 0
+let lastHandMs = 0
 
 async function stateDir($: EngineInterface): Promise<string> {
   const own = await $.env.get('LIGHTNING_PROGRESS_DIR')
@@ -341,44 +344,57 @@ async function stopJob($: EngineInterface, card: RunCard): Promise<void> {
   }
 }
 
-/** A Bash or Monitor command that starts a poller or an event feed by hand, which the mod does
- * itself: the refusal Claude reads, or null. A hand-started poller needs the sandbox lifted and
- * breaks on shell quoting; a Monitor on the events repeats the notes the mod already sends. The
- * skill's own note says this, but only where its text reaches Claude. */
-export function guardCommand(command: string): string | null {
-  if (HAND_WATCH.test(command)) {
-    return (
-      `The lightning plugin's job-progress mod is loaded: start the poller with the \`mcp__lightning__${TOOL}\` ` +
-      'tool instead (load it with ToolSearch `select:mcp__lightning__watch_job` if needed). It takes the same ' +
-      'arguments as `progress.py watch` (job, or studio and log; run, teamspace, note), runs outside the sandbox, ' +
-      'draws the bars and sends you the events that need a reply. One call per job; skip the Monitor.'
-    )
-  }
+/** What Claude reads about a command that starts a poller or an event feed by hand, which the mod
+ * does itself, or null. A hand-started poller needs the sandbox lifted and breaks on shell
+ * quoting; a Monitor on the events repeats the notes the mod already sends. The skill's own note
+ * says this, but only where its text reaches Claude. A Bash command only reminds, since the text
+ * can be a script or a file being written; a Monitor on the events is refused. */
+export function handNote(command: string): string | null {
   if (HAND_EVENTS.test(command)) {
     return (
       "No Monitor needed: the lightning plugin's job-progress mod already follows this run's events and sends " +
-      'you each one that needs a reply. Start pollers with `mcp__lightning__watch_job`.'
+      `you each one that needs a reply. Start pollers with \`mcp__lightning__${TOOL}\`.`
+    )
+  }
+  if (HAND_WATCH.test(command)) {
+    return (
+      `The lightning plugin's job-progress mod is loaded: start pollers with the \`mcp__lightning__${TOOL}\` ` +
+      'tool (load it with ToolSearch `select:mcp__lightning__watch_job` if needed), not Bash. It takes the same ' +
+      'arguments as `progress.py watch` (job, or studio and log; run, teamspace, note), runs outside the sandbox, ' +
+      'draws the bars and sends you the events that need a reply. One call per job; skip the Monitor.'
     )
   }
   return null
 }
 
-/** Whether a command or its output shows a run reporting progress for a poller. */
-export const reportsProgress = (command: string, output: string): boolean =>
-  !HAND_WATCH.test(command) && !HAND_EVENTS.test(command) && (PROGRESS_MARK.test(command) || PROGRESS_MARK.test(output))
+/** Whether a Bash call's output, or a Monitor's command, shows a run reporting progress with no
+ * poller. A Bash command that only mentions the word (a commit message, a grep) is not one. */
+export const reportsProgress = (command: string, output: string, isMonitor = false): boolean =>
+  !HAND_WATCH.test(command) &&
+  !HAND_EVENTS.test(command) &&
+  (PROGRESS_LINE.test(output) || (isMonitor && PROGRESS_FILTER.test(command)))
 
 export const NUDGE =
   'This run reports PROGRESS lines, but no progress poller is watching any run of this session, so the ' +
   `person sees no bar. Start one now with \`mcp__lightning__${TOOL}\` (a job name, or studio and log), ` +
   'one per job or log, rather than following the log yourself.'
 
-/** The reminder for a call whose run has no poller, at most every NUDGE_EVERY_MS. */
-async function nudgeFor($: EngineInterface, command: string, output: string): Promise<string | null> {
-  if (liveRuns || !reportsProgress(command, output)) return null
+/** The reminders for a Bash or Monitor call: a poller started by hand, or a run with none. Each at
+ * most every NUDGE_EVERY_MS. */
+async function nudgesFor($: EngineInterface, command: string, output: string, isMonitor = false): Promise<string[]> {
+  const out: string[] = []
   const now = await $.clock.now().catch(() => 0)
-  if (!now || now - lastNudgeMs < NUDGE_EVERY_MS) return null
-  lastNudgeMs = now
-  return NUDGE
+  if (!now) return out
+  const hand = handNote(command)
+  if (hand && now - lastHandMs >= NUDGE_EVERY_MS) {
+    lastHandMs = now
+    out.push(hand)
+  }
+  if (!liveRuns && reportsProgress(command, output, isMonitor) && now - lastNudgeMs >= NUDGE_EVERY_MS) {
+    lastNudgeMs = now
+    out.push(NUDGE)
+  }
+  return out
 }
 
 export const register: Register = on => {
@@ -432,19 +448,18 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const deny = guardCommand(e.command)
-    if (deny) return { deny }
     const out = await next(e)
-    const nudge = 'deny' in out && out.deny ? null : await nudgeFor($, e.command, out.text ?? '')
-    return nudge ? { ...out, context: [...(out.context ?? []), nudge] } : out
+    if ('deny' in out && out.deny) return out
+    const nudges = await nudgesFor($, e.command, out.text ?? '')
+    return nudges.length ? { ...out, context: [...(out.context ?? []), ...nudges] } : out
   })
 
   on('tool.call', { tool: 'Monitor' }, async ($, e, next) => {
-    const deny = e.command ? guardCommand(e.command) : null
-    if (deny) return { deny }
+    if (e.command && HAND_EVENTS.test(e.command)) return { deny: handNote(e.command)! }
     const out = await next(e)
-    const nudge = e.command && !('deny' in out && out.deny) ? await nudgeFor($, e.command, '') : null
-    return nudge ? { ...out, context: [...(out.context ?? []), nudge] } : out
+    if (!e.command || ('deny' in out && out.deny)) return out
+    const nudges = await nudgesFor($, e.command, '', true)
+    return nudges.length ? { ...out, context: [...(out.context ?? []), ...nudges] } : out
   })
 
   // notes appended mid-turn reach Claude with the turn's next request; see delivery.ts

@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { guardCommand, isWanted, NUDGE, parseWatchLine, reportsProgress, skillNote, watchArgs } from './register'
+import { handNote, isWanted, NUDGE, parseWatchLine, reportsProgress, skillNote, watchArgs } from './register'
 
 const DIR = '/state/lightning-progress'
 const NOW_MS = 10_000_000
@@ -245,31 +245,42 @@ test('an event reaches an idle Claude as a turn of its own', async ($, on) => {
 })
 
 describe('pollers started by hand', () => {
-  test('a poller or event feed started by hand is turned away toward watch_job', () => {
+  test('a poller or event feed started by hand points Claude at watch_job', () => {
     // the session dump: Bash pollers that broke on quoting, and Monitors that repeated the notes
     const py = 'python3 /x/lightning-jobs/progress.py'
-    expect(guardCommand(`export DEBUG=0; ${py} watch --studio g0 --log recipe/g1.log`)).toContain('mcp__lightning__watch_job')
-    expect(guardCommand('lightning job watch g2-s0 --json')).toContain('mcp__lightning__watch_job')
-    expect(guardCommand(`sleep 20; ${py} events --run g1 --all`)).toContain('No Monitor needed')
-    expect(guardCommand(`${py} statusline`)).toBeNull()
-    expect(guardCommand(`${py} abandon g1`)).toBeNull()
+    expect(handNote(`export DEBUG=0; ${py} watch --studio g0 --log recipe/g1.log`)).toContain('mcp__lightning__watch_job')
+    expect(handNote('lightning job watch g2-s0 --json')).toContain('mcp__lightning__watch_job')
+    expect(handNote(`sleep 20; ${py} events --run g1 --all`)).toContain('No Monitor needed')
+    expect(handNote(`${py} statusline`)).toBeNull()
+    expect(handNote(`${py} abandon g1`)).toBeNull()
   })
 
-  test('progress markers with no poller are spotted', () => {
-    expect(reportsProgress('tail -f out | grep PROGRESS_EXIT', '')).toBe(true)
+  test('progress lines with no poller are spotted, the bare word is not', () => {
+    expect(reportsProgress('tail -f out | grep PROGRESS_EXIT', '', true)).toBe(true)
     expect(reportsProgress('tail -n 15 smoke.log', '09:34:05 PROGRESS 10/40')).toBe(true)
+    expect(reportsProgress('tail -n 15 smoke.log', '09:30:55 PROGRESS_PHASE smoke_train')).toBe(true)
     expect(reportsProgress('ls', 'nothing')).toBe(false)
-    expect(reportsProgress('python3 progress.py watch --studio s --log PROGRESS.log', '')).toBe(false)
+    expect(reportsProgress('python3 progress.py watch --studio s --log PROGRESS.log', '', true)).toBe(false)
+    // a commit message naming the protocol: this fired on the PR's own commit
+    expect(reportsProgress('git commit -m "remind on PROGRESS lines"', '[fix e8b2765] make the bars reliable')).toBe(false)
   })
 
-  test('Bash: a hand-started poller is refused; a watched run gets no reminder', async ($, on) => {
+  test('Bash: a hand-started poller runs, with a reminder; a Monitor on the events is refused', async ($, on) => {
     on('tool.call', { tool: 'Bash' }, async () => ({ result: 'PROGRESS 10/40', text: 'PROGRESS 10/40' }) as never)
+    on('tool.call', { tool: 'Monitor' }, async () => ({ result: 'started', text: 'started' }) as never)
     await started($, on)
+    // the text can be a script or file being written, so Bash is never refused
+    const ran = (await $.tool.call({ tool: 'Bash', command: 'python3 progress.py watch train-run' } as never)) as {
+      deny?: string
+      context?: string[]
+    }
+    expect(ran.deny).toBeUndefined()
+    expect(ran.context?.[0]).toContain('watch_job')
     // this session's run has a fresh state file, so it counts as watched: no reminder
-    const denied = await $.tool.call({ tool: 'Bash', command: 'python3 progress.py watch train-run' } as never)
-    expect((denied as { deny?: string }).deny).toContain('watch_job')
     const out = await $.tool.call({ tool: 'Bash', command: 'tail -n 5 smoke.log' } as never)
     expect((out as { context?: string[] }).context ?? []).not.toContain(NUDGE)
+    const mon = await $.tool.call({ tool: 'Monitor', command: 'python3 progress.py events --run r', description: 'x', timeout_ms: 1 } as never)
+    expect((mon as { deny?: string }).deny).toContain('No Monitor needed')
   })
 })
 
