@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0](https://github.com/Lightning-AI/skills/compare/v1.0.0...v1.0.0) (2026-10-06)
+## [1.1.0](https://github.com/Lightning-AI/skills/compare/v1.0.0...v1.1.0) (2026-10-06)
 
 
 ### Features
