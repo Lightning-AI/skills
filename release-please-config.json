@@ -14,7 +14,6 @@
       "release-type": "simple",
       "package-name": "lightning",
       "changelog-path": "CHANGELOG.md",
-      "release-as": "1.0.0",
       "extra-files": [
         { "type": "json", "path": ".claude-plugin/plugin.json", "jsonpath": "$.version" }
       ]
