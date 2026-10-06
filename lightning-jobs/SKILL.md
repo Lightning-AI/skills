@@ -273,10 +273,13 @@ can start right now, fastest first:
 from lightning_sdk import Teamspace
 ts = Teamspace("my-org/my-teamspace")
 FAMILY = "H100"   # the GPU family the workload needs
+OWN = {"lightning-baremetal", "lightning-public-prod"}   # Lightning's own accounts sort first
 # Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
         for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
-for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0))[:15]:
+# then real waits before missing or placeholder ones (300 s, 10800 s), then fastest, then cheapest
+key = lambda r: (r[2] not in OWN, r[0] in (None, 300, 10800), r[0] or 0, r[1] or 0)
+for wait, cost, acct, m in sorted(rows, key=key)[:15]:
     print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
 ```
 
@@ -514,7 +517,9 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
 - **`-e`/`env=` values are visible to everyone in the teamspace.** Don't pass tokens (Hugging Face,
-  W&B, API keys) that way; if one was passed, tell the user to rotate it.
+  W&B, API keys) that way; if one was passed, tell the user to rotate it. Jobs have no secrets
+  option, so run work that needs a token on a Studio, where the user logs in themselves
+  (`hf auth login`), or pick a model or dataset that needs no token.
 - **A memory peak measured on a bigger GPU doesn't carry over to a smaller one.** Warm-up steps
   (e.g. attention autotuning) and the allocator grow into free memory: a 64 GB peak measured on an
   H200 ran out of memory on an 80 GB H100, with and without gradient checkpointing. Run on the GPU

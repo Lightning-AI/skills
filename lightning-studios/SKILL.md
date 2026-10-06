@@ -186,10 +186,13 @@ can start right now, fastest first:
 from lightning_sdk import Teamspace
 ts = Teamspace("my-org/my-teamspace")
 FAMILY = "H100"   # the GPU family the workload needs
+OWN = {"lightning-baremetal", "lightning-public-prod"}   # Lightning's own accounts sort first
 # Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
         for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
-for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0))[:15]:
+# then real waits before missing or placeholder ones (300 s, 10800 s), then fastest, then cheapest
+key = lambda r: (r[2] not in OWN, r[0] in (None, 300, 10800), r[0] or 0, r[1] or 0)
+for wait, cost, acct, m in sorted(rows, key=key)[:15]:
     print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
 ```
 
@@ -491,8 +494,8 @@ lightning api "/v1/projects/${PROJECT_ID}/cloudspaces" -q '.cloudspaces[].name'
 - **`studio.switch_machine()` can raise `ApiException (400) … "cannot switch to a Studio"` and still
   switch.** Catch that error and poll `nvidia-smi` for the hardware, as in *Example workflows*;
   don't restart or re-switch on it.
-- **Don't assume the folder a command starts in.** `cd` to the absolute path the upload landed in,
-  as in *Example workflows*, and `ls` the script there before the real run.
+- **Don't assume the folder a command starts in.** `cd` to the folder the upload landed in by its
+  path from home (`cd ~/src`, as the examples do), and `ls` the script there before the real run.
 - **Detach with `nohup … </dev/null >/dev/null 2>&1`.** Without the redirects, every later
   `studio.run*()` output starts with `nohup: ignoring input`, which floods a log monitor.
 - **`studio.run*()` raises when the command's output isn't valid UTF-8.** Output cut through a multi-byte character (`tail -c N` on a log with `é` or a progress bar, `head -c` on a text file) fails in `cloud_space_service_get_long_running_command_in_cloud_space` (HTTP 500), even though the command itself succeeded. Read logs with `tail -n N`, or pipe through `iconv -c -f utf-8 -t utf-8`.
