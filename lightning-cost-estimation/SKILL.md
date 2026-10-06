@@ -270,8 +270,10 @@ tensor-parallel degree.
 
 **Activations come on top in every case** and grow with batch size × sequence length (and vocabulary
 size, for the logits); gradient checkpointing trades compute to shrink them. They can dominate a
-small model: a 4B LoRA run at batch 8 × 768 tokens peaked at 64 GB. QLoRA is LoRA plus quantizing the
-frozen base ([PEFT: quantization](https://huggingface.co/docs/peft/developer_guides/quantization)).
+small model: a 4B LoRA run at batch 8 × 768 tokens peaked at 64 GB. A peak measured on a bigger GPU
+doesn't carry over: that run, measured on an H200, ran out of memory on an 80 GB H100, so size to
+the GPU the number came from. QLoRA is LoRA plus quantizing the frozen base ([PEFT:
+quantization](https://huggingface.co/docs/peft/developer_guides/quantization)).
 
 **Training time** (this is what turns into money):
 

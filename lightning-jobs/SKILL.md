@@ -273,10 +273,13 @@ can start right now, fastest first:
 from lightning_sdk import Teamspace
 ts = Teamspace("my-org/my-teamspace")
 FAMILY = "H100"   # the GPU family the workload needs
+OWN = {"lightning-baremetal", "lightning-public-prod"}   # Lightning's own accounts sort first
 # Accounts go by id: ts.cloud_accounts holds display names, and list_machines() returns [] for a name
 rows = [(m.wait_time, m.cost, a.cluster_id, m) for a in ts.cloud_account_objs
         for m in ts.list_machines(cloud_account=a.cluster_id) if m.family == FAMILY]
-for wait, cost, acct, m in sorted(rows, key=lambda r: (r[0] is None, r[0] or 0, r[1] or 0)):
+# then real waits before missing or placeholder ones (300 s, 10800 s), then fastest, then cheapest
+key = lambda r: (r[2] not in OWN, r[0] in (None, 300, 10800), r[0] or 0, r[1] or 0)
+for wait, cost, acct, m in sorted(rows, key=key)[:15]:
     print(f"{acct:34} {m.name:28} x{m.accelerator_count}  ${cost}/h  wait ~{wait}s")
 ```
 
@@ -285,7 +288,15 @@ the row's machine on that row's account (`Job.run(machine=m, cloud=acct, …)`, 
 with `cloud=acct`): what matters is that the account sells that GPU at that count. The SDK maps a
 GPU's names (`H200`, `lit-h200-1`, `lit-h200-141gb-1`) to one machine. `list_machines()` with no
 argument merges several accounts without saying which row belongs to which, so it can't tell you
-where to launch. Show the user the top rows with price and wait. **Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
+where to launch. Show the user the top rows with price and wait: the head of the sorted list, never the tail, and
+check its first row against the request before anything else.
+
+**Prefer Lightning's own accounts (`lightning-baremetal`, `lightning-public-prod`).** Dev and test
+accounts can list GPUs they can't start: a broken region, a bare HTTP 500, `no price available`, or
+a Studio that boots without its GPU. A `wait_time` of exactly 300 or 10800 s is a placeholder, not
+an estimate. When an account fails to start, take the next row instead of retrying it.
+
+**Ask before starting any GPU, and wait for a yes.** Show the machine, its account, the price
 per hour and the most the run can cost under its deadline. Ask even when the user named the GPU
 or gave a budget: a budget is a limit, not approval to spend it. For
 quotes before login, `GET /v1/core/accelerators?cloudProvider=<PROVIDER>` needs no auth (the `lightning-cost-estimation`
@@ -320,9 +331,11 @@ lightning job logs my-job --teamspace owner/teamspace --tail 40   # confirm the 
 lightning job stop my-job --teamspace owner/teamspace             # only if the log shows a crash or the wrong machine
 ```
 
-Put a hardware check first in the job's own command, e.g.
-`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && python train.py`. The first log
-line then tells you what you actually got.
+Put a hardware and folder check first in the job's own command, e.g.
+`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader && pwd && ls && python train.py`.
+The first log lines then tell you what you actually got and whether the script is where the command
+starts. **The command runs in a plain POSIX `sh`, not bash**: `set -o pipefail`, `[[ … ]]` and arrays
+fail before your script starts, so keep it to `&&`-chained commands.
 
 ## Example workflows
 
@@ -503,5 +516,13 @@ everyday use prefer the CLI: `lightning job list --json`, `lightning job inspect
 - **A taken job name is silently replaced, so read `job.name` back.** Names are unique per teamspace: on a clash the platform creates the job under a new name and the SDK warns `the job was created as '<new>' instead`. Omitted `--name` auto-generates one.
 - `--machine` is **case-sensitive** (`--machine a100` fails with `Invalid value for '--machine'`); use the exact names above. A100_40GB/A100_80GB variants are SDK-only (hidden from CLI).
 - `job.stop()` blocks (polls every 1s) until the job reaches a terminal state.
+- **`-e`/`env=` values are visible to everyone in the teamspace.** Don't pass tokens (Hugging Face,
+  W&B, API keys) that way; if one was passed, tell the user to rotate it. Jobs have no secrets
+  option, so run work that needs a token on a Studio, where the user logs in themselves
+  (`hf auth login`), or pick a model or dataset that needs no token.
+- **A memory peak measured on a bigger GPU doesn't carry over to a smaller one.** Warm-up steps
+  (e.g. attention autotuning) and the allocator grow into free memory: a 64 GB peak measured on an
+  H200 ran out of memory on an 80 GB H100, with and without gradient checkpointing. Run on the GPU
+  the number came from, or test a few steps on the smaller one before the full run.
 - **`job.logs(follow=True)` replays the job's saved lines each time it connects, and ignores `since` while a job runs.** Anything that follows logs across reconnects must drop lines it has already seen. `progress.py` requests `timestamps=True` and skips lines it has already processed; without that, replayed early progress lines would look like a setback.
 - **A Monitor that polls Lightning directly fails inside Claude Code's sandbox**, because the SDK's and CLI's requests can't get out, and chains like `sleep 60; lightning …` get blocked too. Keep the network side in one unsandboxed `progress.py watch` and point the Monitor at `progress.py events`, which only reads `~/.local/state/lightning-progress/events.jsonl`. The status line reads the same folder. Neither needs to write it, so there is no need to move the folder into a sandbox-writable place; a folder in the session's scratchpad vanishes with the session and leaves the bar empty. `watch --query PROGRESS` cuts traffic for very chatty jobs, but it also hides error lines, so stalls lose their likely cause.
