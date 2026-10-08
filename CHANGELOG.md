@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Lightning-AI/skills/compare/v1.1.0...v1.1.1) (2026-10-08)
+
+
+### Documentation
+
+* **readme:** headless plugin install, per-agent skills.sh, sign-in by environment ([#54](https://github.com/Lightning-AI/skills/issues/54)) ([147a8fd](https://github.com/Lightning-AI/skills/commit/147a8fd736cde359f502badfb85827c6c5518a75))
+
 ## [1.1.0](https://github.com/Lightning-AI/skills/compare/v1.0.0...v1.1.0) (2026-10-06)
 
 
