@@ -89,8 +89,8 @@ Python status line's output for the same states, so regenerate them when the bar
   syntax fails the lint, and CI runs the tests on 3.9.
 - **They must work on every platform Claude Code runs on**: macOS, Linux and Windows. Avoid a
   hard-coded `python3` command, `sh -c`, `os.kill(pid, 0)` (on Windows, signal 0 is Ctrl+C),
-  `os.execv`, and printing non-ASCII text without UTF-8 output. `progress.py` still has some of
-  these; don't add more.
+  `os.execv`, and printing non-ASCII text without UTF-8 output. The `job_progress` package still
+  has some of these; don't add more.
 - **Keep the `job_progress` layers.** From the top down:
   - `watch`, `events` and `statusline` are the commands, and never import each other;
   - `tracker` and `settings` sit below them;
