@@ -1,6 +1,6 @@
 # Lightning AI Agent Skills
 
-Agent skills that teach AI coding agents (Claude Code, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, and up-front cost estimates for any of it.
+Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, and up-front cost estimates for any of it.
 
 ## Skills
 
@@ -22,7 +22,14 @@ All skills are built around the [`lightning-sdk`](https://pypi.org/project/light
 
 ### Claude Code plugin
 
-This repo is also a [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so Claude Code can install all seven skills as one plugin and keep them updated:
+This repo is also a [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so Claude Code can install all seven skills as one plugin and keep them updated. The plugin also adds live job progress bars above the prompt. From a shell (no Claude session needed, so it works in scripts and headless setups):
+
+```bash
+claude plugin marketplace add Lightning-AI/skills
+claude plugin install lightning@lightning-ai
+```
+
+Or from inside a Claude Code session:
 
 ```bash
 /plugin marketplace add Lightning-AI/skills
@@ -39,8 +46,8 @@ The [skills.sh](https://skills.sh) CLI installs into Claude Code, Cursor, Codex,
 # interactive: pick skills and target agents
 npx skills add Lightning-AI/skills
 
-# install everything without prompts
-npx skills add Lightning-AI/skills --all -y
+# install every skill for one agent, user-level, without prompts (swap codex for your agent)
+npx skills add Lightning-AI/skills --agent codex --skill '*' --global --yes
 
 # install a specific skill, e.g. just sandboxes
 npx skills add Lightning-AI/skills -s lightning-sandboxes
@@ -48,6 +55,8 @@ npx skills add Lightning-AI/skills -s lightning-sandboxes
 # user-level (global) instead of the current project
 npx skills add Lightning-AI/skills -g
 ```
+
+Avoid `--all` unless you mean it: it selects every skill *and* every agent on the machine.
 
 ### Manual copy
 
@@ -65,8 +74,11 @@ cp -r $SKILLS ~/.claude/skills/
 
 ## Prerequisites
 
-- Python with `uv` or `pip`. Skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
-- A Lightning AI account: authenticate with `lightning login` or set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional)
+- Python 3.11+ with `uv` or `pip`. There's no need to install the SDK first: skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
+- A Lightning AI account. Sign in once, where the agent runs:
+  - **On your machine:** `lightning login` (browser sign-in, saved for later commands)
+  - **Headless (CI, cloud agents, no browser):** set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional) through that environment's secrets
+  - **Inside a Studio:** nothing to do, you're already signed in
 
 > [!IMPORTANT]
 > These skills create real, billed resources on your Lightning AI account (Studios, jobs,
