@@ -8,12 +8,12 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { RunCard, Watcher } from '../../types'
 import { createDelivery } from './delivery'
-import { BAR_H, BAR_W, barAlt, barSvg, hiddenCards, jobUrl, moreLine, toCards, type JobRef } from './desktop'
+import { BAR_H, BAR_W, barAlt, barSvg, jobUrl, MAX_CARDS, moreLabel, toCards, visibleCards, type JobRef } from './desktop'
 import { FINAL_VISIBLE_FOR, isFinal, isStale, renderAll, type RunState } from './render'
 
 const rows = atom({ plugin: 'lightning', key: 'rows' } as const, [])
 const cards = atom({ plugin: 'lightning', key: 'cards' } as const, [])
-const moreCards = atom({ plugin: 'lightning', key: 'moreCards' } as const, 0)
+const expanded = atom({ plugin: 'lightning', key: 'expanded' } as const, false)
 const watchers = atom({ plugin: 'lightning', key: 'watchers' } as const, {})
 
 const TOOL = 'watch_job'
@@ -321,8 +321,6 @@ async function refresh($: EngineInterface): Promise<void> {
   if (JSON.stringify(next) !== JSON.stringify(await read($, rows))) await update($, rows, () => next)
   const nextCards = toCards(states, jobs, now)
   if (JSON.stringify(nextCards) !== JSON.stringify(await read($, cards))) await update($, cards, () => nextCards)
-  const more = hiddenCards(states, now)
-  if (more !== (await read($, moreCards))) await update($, moreCards, () => more)
 }
 
 /** Stops a run's job after the person confirms, and tells Claude, so it doesn't wait on it. */
@@ -492,9 +490,11 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     if (e.surface === 'desktop') {
-      const list = await read($, cards)
-      if (!list.length) return next(e)
-      const more = await read($, moreCards)
+      const all = await read($, cards)
+      if (!all.length) return next(e)
+      const open = await read($, expanded)
+      const list = visibleCards(all, open)
+      const hidden = all.length - list.length
       const cloud = (await $.env.get('LIGHTNING_CLOUD_URL')) || undefined
       const { Box, Button, Link, Svg, Text } = $.ui.resolve(e)
       return (
@@ -529,7 +529,13 @@ export const register: Register = on => {
               </Box>
             )
           })}
-          {more ? <Text dimColor>{moreLine(more)}</Text> : null}
+          {all.length > MAX_CARDS ? (
+            <Button
+              key="more"
+              label={moreLabel(hidden, open)}
+              onPress={() => void update($, expanded, v => !v)}
+            />
+          ) : null}
         </Box>
       )
     }
