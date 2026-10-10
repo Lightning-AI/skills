@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { barAlt, barSvg, hiddenCards, jobUrl, MAX_CARDS, moreLine, toCard, toCards } from './desktop'
+import { barAlt, barSvg, jobUrl, MAX_CARDS, moreLabel, toCard, toCards, visibleCards } from './desktop'
 import type { RunState } from './render'
 
 const NOW = 10_000
@@ -95,14 +95,40 @@ describe('cards', () => {
     expect(toCards([done, old, staged], {}, NOW).map(c => c.run)).toEqual(['eval-base', 'setup'])
   })
 
-  test('three cards at most, and a line counting the rest', () => {
+  test('three cards collapsed, every card once expanded', () => {
     const runs = ['a', 'b', 'c', 'd', 'e'].map((run, i) => ({ ...base, run, started_at: NOW - 100 + i }))
-    expect(toCards(runs, {}, NOW).map(c => c.run)).toEqual(['a', 'b', 'c'])
+    const all = toCards(runs, {}, NOW)
+    expect(all.map(c => c.run)).toEqual(['a', 'b', 'c', 'd', 'e'])
     expect(MAX_CARDS).toBe(3)
-    expect(hiddenCards(runs, NOW)).toBe(2)
-    expect(hiddenCards(runs.slice(0, 3), NOW)).toBe(0)
-    expect(moreLine(2)).toBe('+2 more runs')
-    expect(moreLine(1)).toBe('+1 more run')
+    expect(visibleCards(all, false).map(c => c.run)).toEqual(['a', 'b', 'c'])
+    expect(visibleCards(all, true)).toHaveLength(5)
+    expect(moreLabel(2, false)).toBe('Show 2 more runs')
+    expect(moreLabel(1, false)).toBe('Show 1 more run')
+    expect(moreLabel(0, true)).toBe('Show fewer runs')
+  })
+
+  test('stages without a declared count draw one bar, not a split one', () => {
+    // the eval logs from the screenshot: `PROGRESS_PHASE queued` then `PROGRESS_PHASE running`, no
+    // count, so an instant `queued` stage filled half the bar green before any progress
+    const evals: RunState = {
+      ...base,
+      stage: 'running',
+      stage_since: NOW - 60,
+      step: 145,
+      total: 581,
+      eta_s: 180,
+      stages: [
+        { name: 'queued', start: NOW - 60, end: NOW - 60, attempt: 1 },
+        { name: 'running', start: NOW - 60, end: null, attempt: 1 },
+      ],
+    }
+    const c = toCard(evals, null, NOW)
+    expect(c.stages).toEqual([])
+    expect(c.fraction).toBe(145 / 581)
+    expect(c.headline).toBe('24% · ETA 3m00s')
+    const svg = barSvg(c)
+    expect(svg).not.toContain('#22c55e')
+    expect(svg).toMatch(/width="119\.\d"[^>]*fill="#3b82f6"/)
   })
 
   test('stage names are escaped in the SVG', () => {

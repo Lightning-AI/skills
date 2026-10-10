@@ -77,6 +77,20 @@ class Parsing(unittest.TestCase):
         self.assertIn("OutOfMemoryError", must(tracker.parse_error("torch.OutOfMemoryError: CUDA out of memory.")))
         self.assertIsNone(tracker.parse_error("step 10 loss 0.4"))
 
+    def test_warning_after_a_tqdm_bar_is_no_error(self):
+        # the live SFT run: rank 6's allocator warning landed on rank 0's unfinished tqdm line
+        line = (
+            "39%|███▉      | 356/916 [51:58<50:01,  5.36s/it][rank6]:[W1009 20:49:55.509176744 "
+            "CUDACachingAllocator.cpp:3933] memory allocation failed, out of memory, retrying"
+        )
+        self.assertIsNone(tracker.parse_error(line))
+        self.assertIsNone(tracker.parse_error("[rank3]:[W1009 20:49:55.5 ProcessGroupNCCL.cpp:1] NCCL error"))
+
+    def test_error_after_a_tqdm_bar_drops_the_bar(self):
+        line = " 12%|█▏        | 12/100 [00:30<03:40,  2.5s/it]torch.OutOfMemoryError: CUDA out of memory."
+        self.assertEqual(tracker.parse_error(line), "torch.OutOfMemoryError: CUDA out of memory.")
+        self.assertEqual(tracker.parse_error("x\r 5%|▌ | 5/100 [00:01<00:19] RuntimeError: boom"), "RuntimeError: boom")
+
     def test_bar(self):
         self.assertEqual(core.bar(6, 9, 20, width=20), "▓" * 6 + "▒" * 3 + "░" * 11)
         self.assertEqual(core.fmt_duration(160), "2m40s")

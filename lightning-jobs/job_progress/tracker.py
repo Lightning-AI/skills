@@ -24,8 +24,13 @@ EPOCH_RE = re.compile(r"\bEpoch\s+(\d+)")
 TQDM_SKIP_RE = re.compile(r"Validat|Sanity|Testing|Predict", re.I)
 EXIT_RE = re.compile(r"\bPROGRESS_EXIT\s+(-?\d+)")
 STAGE_RE = re.compile(r"\bPROGRESS_PHASE\s+(\S+)(?:\s+(\d+)\s*/\s*(\d+))?")
-# warnings that mention an error word, e.g. PyTorch's `[W924 14:51:32 CUDACachingAllocator.cpp] ... OOM`
-WARN_RE = re.compile(r"^\s*\[?[WI]\d{3,4}\s|\b\w*Warning\b|^\s*\[?(WARNING|WARN|INFO)\b", re.I)
+# warnings that mention an error word, e.g. PyTorch's `[W924 14:51:32 CUDACachingAllocator.cpp] ... OOM`,
+# which other ranks print mid-line: after a `[rank6]:` prefix or an unfinished tqdm bar
+WARN_RE = re.compile(
+    r"^\s*\[?[WI]\d{3,4}\s|\[[WI]\d{4} \d\d:\d\d:\d\d|\b\w*Warning\b|^\s*\[?(WARNING|WARN|INFO)\b", re.I
+)
+# a tqdm bar left on the line an error was printed onto: `39%|███▉      | 356/916 [51:58<50:01, 5.36s/it]`
+TQDM_BAR_RE = re.compile(r"\d{1,3}%\|[^|]*\|\s*\d+/\d+(?:\s*\[[^\]]*\])?")
 PROGRESS_KEYS = ("step", "total", "epoch", "source", "peak", "peak_epoch", "milestone")
 ERROR_RE = re.compile(
     r"\w+(Error|Exception)\b|out of memory|\bOOM\b|\bKilled\b|Segmentation fault|NCCL.*(error|timeout)",
@@ -78,7 +83,11 @@ def parse_error(message: str) -> str | None:
     if WARN_RE.search(message):
         return None
     m = ERROR_RE.search(message)
-    return message.strip()[:120] if m else None
+    if not m:
+        return None
+    # the last redraw is the one on screen; the bar's own text is noise in the error's place
+    text = TQDM_BAR_RE.sub("", message.split("\r")[-1]).strip() or message.strip()
+    return text[:120]
 
 
 def new_state(run: str) -> dict[str, Any]:
