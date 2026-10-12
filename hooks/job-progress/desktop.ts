@@ -14,7 +14,7 @@ import {
   type RunState,
 } from './render'
 
-// a fourth card no longer fits the band; the rest are counted on a line below the cards
+// a fourth card no longer fits the band collapsed; the rest sit behind a button below the cards
 export const MAX_CARDS = 3
 export const BAR_W = 480
 export const BAR_H = 12
@@ -33,6 +33,9 @@ export type JobRef = RunCard['job']
 const RUNNING = ['starting', 'running', 'recovering']
 
 function stagesOf(s: RunState, now: number): CardStage[] {
+  // without a declared count the timeline would split the bar evenly over the stages seen so far,
+  // so a stage that lasted no time took half of it; the terminal draws those runs as one bar too
+  if (!s.stage_count) return []
   const attempt = s.attempt_no || 1
   const seen = (s.stages ?? []).filter(st => (st.attempt ?? 1) === attempt)
   const out: CardStage[] = seen.map(st => {
@@ -113,16 +116,16 @@ export function toCards(states: RunState[], jobs: Record<string, JobRef>, now: n
   return states
     .filter(s => isShown(s, now))
     .sort(byDisplayOrder)
-    .slice(0, MAX_CARDS)
     .map(s => toCard(s, jobs[s.run] ?? null, now))
 }
 
-/** How many shown runs didn't get a card. */
-export const hiddenCards = (states: RunState[], now: number): number =>
-  Math.max(0, states.filter(s => isShown(s, now)).length - MAX_CARDS)
+/** The cards the band draws: the first few, or all of them once the person expanded the band. */
+export const visibleCards = (all: RunCard[], expanded: boolean): RunCard[] =>
+  expanded ? all : all.slice(0, MAX_CARDS)
 
-/** The line under the cards that counts the runs without one. */
-export const moreLine = (n: number): string => `+${n} more run${n > 1 ? 's' : ''}`
+/** The button under the cards that shows the runs without one, or hides them again. */
+export const moreLabel = (hidden: number, expanded: boolean): string =>
+  expanded ? 'Show fewer runs' : `Show ${hidden} more run${hidden > 1 ? 's' : ''}`
 
 /** The job's page on Lightning, as the SDK's `Job.link` builds it. */
 export function jobUrl(job: NonNullable<JobRef>, cloud = 'https://lightning.ai'): string | null {

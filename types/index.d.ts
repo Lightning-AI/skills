@@ -27,7 +27,7 @@ export type RunCard = {
   fraction: number | null
   /** The furthest the run got before a setback, 0-1; null without one. */
   peak: number | null
-  /** The stage timeline; empty for a run that declares no stages. */
+  /** The stage timeline; empty for a run that declares no stage count. */
   stages: CardStage[]
   /** What the run is doing, e.g. `45% · ETA 12m05s` or `waiting for machine · 5m17s`. */
   headline: string
@@ -43,8 +43,8 @@ declare module 'claude-code' {
     lightning: {
       rows: BandRow[]
       cards: RunCard[]
-      /** Shown runs past the cards' limit, counted on a line below them. */
-      moreCards: number
+      /** Whether the band shows every run's card, not just the first few. */
+      expanded: boolean
       watchers: Record<string, Watcher>
     }
   }

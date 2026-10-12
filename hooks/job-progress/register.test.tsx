@@ -129,6 +129,30 @@ describe('the band', () => {
     await ui.unmount()
   })
 
+  test('the desktop app hides cards past the third behind a button that shows them', async ($, on) => {
+    const extra = ['eval-a', 'eval-b', 'eval-c', 'eval-d'].flatMap(run => [
+      [`${DIR}/state/${run}.json`, JSON.stringify({ ...STATE, run })],
+      [`${DIR}/runs/${run}.json`, JSON.stringify({ session: 'this-session' })],
+    ])
+    for (const [path, text] of extra) FILES[path!] = text!
+    try {
+      const clock = await started($, on)
+      const ui = await $.ui.mount({ plugin: 'lightning', surface: 'desktop', component: 'AbovePrompt', props: {} as never })
+      expect(await ui.findAll({ type: 'Svg' })).toHaveLength(3)
+      expect((await ui.find({ key: 'more' }))?.props.label).toBe('Show 2 more runs')
+      await ui.press({ key: 'more' })
+      await clock.settle()
+      expect(await ui.findAll({ type: 'Svg' })).toHaveLength(5)
+      expect((await ui.find({ key: 'more' }))?.props.label).toBe('Show fewer runs')
+      await ui.press({ key: 'more' })
+      await clock.settle()
+      expect(await ui.findAll({ type: 'Svg' })).toHaveLength(3)
+      await ui.unmount()
+    } finally {
+      for (const [path] of extra) delete FILES[path!]
+    }
+  })
+
   test('a restarted session starts its pollers again', async ($, on) => {
     const spawned: string[][] = []
     on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
