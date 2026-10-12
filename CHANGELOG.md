@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/Lightning-AI/skills/compare/v1.1.1...v1.1.2) (2026-10-12)
+
+
+### Bug fixes
+
+* **jobs:** stage bars, hidden cards and warnings read as errors ([#56](https://github.com/Lightning-AI/skills/issues/56)) ([0fa06cd](https://github.com/Lightning-AI/skills/commit/0fa06cd5464771f890bdabf9b014f0aceb12840f))
+
 ## [1.1.1](https://github.com/Lightning-AI/skills/compare/v1.1.0...v1.1.1) (2026-10-08)
 
 
