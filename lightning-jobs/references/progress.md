@@ -46,10 +46,13 @@ print(f"PROGRESS {step}/{total_steps}", flush=True)   # optional: f"... attempt=
   progress, so resuming training from a checkpoint shows up as a setback, while stages that never
   broke simply start again.
 
-tqdm bars are read as a fallback when a script has no `PROGRESS` line. They are less reliable:
-PyTorch Lightning's per-epoch bars only give progress within the epoch, and validation bars are
-ignored. A tqdm bar that starts over within one attempt (lm-eval draws one per few-shot setting)
-is read as a new bar, not a setback.
+Without a `PROGRESS` line, two fallbacks are read, in this order: tqdm bars, then the script's
+own step counter (`step 60/200`, `iter 3/50`, e.g. `[train] step 60/200 loss 0.02`). Once a
+better kind shows up in the log, the lesser kinds are ignored. Both are less reliable than
+`PROGRESS`. PyTorch Lightning's per-epoch bars only give progress within the epoch, validation
+bars and counters are ignored, and a counter says nothing of a time budget that ends the run
+early. A bar or counter that starts over within one attempt (lm-eval draws one per few-shot
+setting) is read as a new bar, not a setback.
 
 **2. Start the poller** as a background Bash command. Use `<SKILL_DIR>`, not a guess at a plugin
 cache, which may hold an older version:
