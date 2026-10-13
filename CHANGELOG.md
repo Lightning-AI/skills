@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.3](https://github.com/Lightning-AI/skills/compare/v1.1.2...v1.1.3) (2026-10-13)
+
+
+### Bug fixes
+
+* **artifacts:** drop angle brackets from skill description ([#58](https://github.com/Lightning-AI/skills/issues/58)) ([1c20ada](https://github.com/Lightning-AI/skills/commit/1c20adac06f7d827be7d2f89d6bb8a8037e65437))
+
+
+### Documentation
+
+* align PR recipe with Conventional Commits and fix stale script note ([#47](https://github.com/Lightning-AI/skills/issues/47)) ([58fa0ae](https://github.com/Lightning-AI/skills/commit/58fa0ae6e7d67eb9cfe50a977799feeca9d7ccaf))
+
 ## [1.1.2](https://github.com/Lightning-AI/skills/compare/v1.1.1...v1.1.2) (2026-10-12)
 
 
