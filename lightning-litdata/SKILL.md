@@ -102,8 +102,10 @@ slightly larger than existing JPEGs while far smaller than decoded RGB arrays.
 
 Before scaling a conversion,
 check that `index.json` exists, use `len(StreamingDataset(path))` for sample counts,
-and verify decoded labels/values with a small full loader iteration. Do not depend
-on the private index schema. Use separate trial output, cache and persistent paths.
+and verify decoded labels/values with a small full loader iteration. Match records
+by stable ID: parallel conversion need not retain source order. Verify the complete
+ID set and reject duplicates; encode an explicit position if order is required.
+Do not depend on the private index schema. Use separate trial output, cache and persistent paths.
 If validation fails, fix and rerun the small case before processing the full dataset.
 
 ## Example workflows
