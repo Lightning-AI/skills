@@ -1,0 +1,43 @@
+{
+  "skill_name": "lightning-litdata",
+  "evals": [
+    {
+      "id": 1,
+      "name": "compact-photo-quickstart",
+      "priority": "primary",
+      "prompt": "Help me get started with LitData. Optimize this photo dataset for repeated training reads using sensible defaults that keep storage compact. Preserve existing image content, captions, labels and splits. Give me a small runnable preparation/loading example, verify decoded training batches with two workers, and show the actual storage size compared with the source JPEGs and decoded RGB pixels. Explain your serializer, chunking and compression choices briefly. No model training or checkpoint/resume work is needed.",
+      "expected_output": "A small runnable image preparation/loading example, compact chunks with all records intact, successful two-worker batches, and measured source/chunk/index/decoded bytes.",
+      "files": [
+        "manifest.jsonl",
+        "images/"
+      ],
+      "assertions": [
+        "All 48 source JPEG byte sequences are retained in the optimized chunks.",
+        "All decoded images, captions, labels and splits match their source records.",
+        "The train and validation outputs contain 36 and 12 distinct records respectively.",
+        "Decoded training batches can be read with two workers.",
+        "The report measures source JPEGs, chunks plus indexes and decoded RGB bytes separately.",
+        "The reproduction uses a bounded chunk target and explains serializer and compression choices without claiming optimize must shrink compressed input."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "optimize-and-resume",
+      "prompt": "Prepare samples.jsonl for repeated LitData training reads. Preserve every ID, text, label and train/validation split. Prove all rows survive optimization and can be read using two loader workers. Simulate stopping after two shuffled training batches, checkpoint the loader, and resume in a fresh Python process. Compare the full resulting ID sequence against an uninterrupted run, proving no omissions or duplicates. Leave a runnable reproduction and a concise results report.",
+      "expected_output": "Optimized train and validation datasets, a runnable reproduction, a checkpoint and evidence that resumed sample order exactly matches an uninterrupted run.",
+      "files": [
+        "evals/files/samples.jsonl"
+      ],
+      "assertions": [
+        "All 64 input records retain their exact ID, text, label and split after decoding.",
+        "Training has 48 records and validation has 16, with disjoint IDs.",
+        "A complete read succeeds with two loader workers.",
+        "Checkpointing occurs after two consumed shuffled training batches.",
+        "Resume runs in a different Python process and loads the saved loader state before iteration.",
+        "Consumed IDs followed by resumed IDs exactly equal the uninterrupted sequence, with each training ID appearing once.",
+        "The reproduction and report record installed versions and can be rerun without overwriting source data."
+      ],
+      "priority": "secondary"
+    }
+  ]
+}

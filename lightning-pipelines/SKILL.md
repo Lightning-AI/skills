@@ -12,6 +12,7 @@ schedules. A schedule starts a copy of its target version.
 
 | Request | Use | Verify |
 |---|---|---|
+| Combine preparation and training | Dependent `JobStep`s and `lightning_storage` | Downstream job reads the producer's persisted output |
 | Run new or changed steps | `Pipeline.run()` | Run state and expected step output |
 | Change only the timing | Schedule PUT | Cron, timezone, target and next execution |
 | Use new steps for future runs | Submit version and replace schedules | Desired schedules target the new version; old IDs are absent |
@@ -96,30 +97,64 @@ Deployment steps need deployment logs; multi-machine steps may need `--rank`.
 
 ## Python SDK
 
-Replace the teamspace and name. Use a unique name for a test; reuse an existing
-name only to update that pipeline. This image example needs no Studio:
+Replace the teamspace and cloud with the verified selection. This two-job example
+needs no Studio. Create the managed storage folder **before** submitting jobs:
+`mkdir` inside a job alone does not register persistent teamspace storage.
 
 ```python
+import shlex
+from uuid import uuid4
+
 from lightning_sdk import Machine, Teamspace
 from lightning_sdk.pipeline import JobStep, Pipeline
+from lightning_sdk.teamspace import FolderLocation
 
 ts = Teamspace("owner/teamspace")
-pipeline = Pipeline(name="my-pipeline", teamspace=ts, shared_filesystem=False)
+cloud = "verified-cloud-id"
+folder = f"pipeline-data-{uuid4().hex[:12]}"
+ts.new_folder(folder, location=FolderLocation.CLOUD_AGNOSTIC)
+path = f"/teamspace/lightning_storage/{folder}"
+prepare = f"from pathlib import Path; Path('{path}/data.json').write_text('[1, 2, 3]')"
+consume = f"""import json
+from pathlib import Path
+root = Path({path!r})
+values = json.loads((root / 'data.json').read_text())
+assert values == [1, 2, 3]
+(root / 'summary.json').write_text(json.dumps({{'count': len(values)}}))
+print('verified', values)
+"""
+pipeline = Pipeline(name=folder, teamspace=ts, cloud=cloud,
+                    shared_filesystem=False, dependency_mode="explicit")
 pipeline.run(steps=[
     JobStep(name="prepare", image="python:3.11-slim", machine=Machine.CPU,
-            command="python -c 'print(123)'", max_runtime=300),
+            command="python -c " + shlex.quote(prepare), wait_for=[],
+            max_runtime=300, max_run_attempts=1),
+    JobStep(name="consume", image="python:3.11-slim", machine=Machine.CPU,
+            command="python -c " + shlex.quote(consume), wait_for=["prepare"],
+            max_runtime=300, max_run_attempts=1),
 ])
+run_id = pipeline._pipeline.id
+print("run:", run_id, "storage:", folder)
 ```
 
-For Studio snapshots, shared files, explicit DAGs or multi-machine steps, read
-[Studio and multi-step workflows](references/studio-workflows.md).
-Dependencies control execution order; they do not transfer files. Shared
-filesystem mode requires supported AWS/GCP placement. On Lightning Cloud image
-jobs, use `shared_filesystem=False` and explicit durable outputs when needed.
+`run()` returns `None`; the tested SDK has no public `Pipeline.id`. Capture the
+created model's ID as above immediately after submission, then use API GETs for
+state and logs. If local post-submit code fails, recover the ID through
+[discovery](references/operations.md#find-runs-and-schedules) before retrying.
 
-After submission, poll the exact run with a workload-appropriate deadline.
-Do not resubmit while polling. Check terminal state, step logs and expected
-outputs. On timeout, report the current state and whether work is still running.
+Use a unique name for a test; reuse a pipeline name only to update it. Reuse an
+existing managed folder with a unique subdirectory for each production run.
+Dependencies control order; each job must use the same explicit storage path.
+Read [storage handoff and export](references/storage-workflows.md) to download
+outputs or clean up. For Studio snapshots, DAGs or multi-machine steps, read
+[Studio and multi-step workflows](references/studio-workflows.md).
+Shared filesystem mode requires supported AWS/GCP placement. Lightning Cloud
+image jobs use `shared_filesystem=False`; managed storage still persists outputs.
+
+Poll the exact run every 15–30 seconds with a workload-appropriate deadline that
+includes provisioning and teardown. Job `complete` can precede pipeline completion;
+wait for `PIPELINE_STATE_COMPLETED` and verify step logs and expected outputs.
+Do not resubmit while polling. On timeout, report whether work is still running.
 
 ## Example workflows
 

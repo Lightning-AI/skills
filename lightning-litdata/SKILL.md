@@ -21,10 +21,11 @@ uv pip install --python /tmp/litdata-check/bin/python litdata torch
 /tmp/litdata-check/bin/python -c "import litdata, torch; print(litdata.__version__, torch.__version__)"
 ```
 
-The references track upstream development. Check installed APIs with `hasattr`
-and `inspect.signature` before using newer features. Prefer supported installed
-APIs; explain and pin any required unreleased dependency. Install only needed
-extras, using the names declared by that package version.
+Start with the runnable examples for optimize, streaming and resume. The upstream
+references cover newer features too: check those APIs with `hasattr` and
+`inspect.signature`. Inspect internals when diagnosing a failure or editing
+LitData. Prefer supported installed APIs; explain and pin any required unreleased
+dependency. Install only extras declared by that package version.
 
 ## Choose the data path
 
@@ -36,63 +37,83 @@ or measured I/O bottlenecks. Read optimized data with `StreamingDataset` and
 | Task | Read only the relevant reference/section |
 |---|---|
 | Raw files, Parquet, HF or MDS | [Formats](references/using-litdata.md#10-format-specific-streaming) |
-| Optimize or map | [Processing](references/processing.md) |
-| Images, audio, video, tokens or graphs | [Media and serializers](references/using-litdata.md#3-images-media-types--serializers) |
-| Resume, shuffle or mix datasets | [Streaming](references/streaming.md) |
+| Prepare an image dataset | Start with the example below |
+| Custom processing, map or worker failures | [Processing](references/processing.md) |
+| Other media or custom image encoding | [Media and serializers](references/using-litdata.md#3-images-media-types--serializers) |
+| Resume, custom shuffling or dataset mixing | [Streaming](references/streaming.md) |
 | Stable keys and incremental updates | [Keyed lookup](references/keyed-lookup.md) |
 
 The [cookbook](references/using-litdata.md) is long: locate the needed heading
-before reading that section. Do not load all 15 reference files for one task.
+before reading that section. Load only references relevant to the task.
 Inspect the existing loader/config first. Resolve source, expected batch shape,
 output destination and training setup; ask only for missing consequential choices.
 Preserve labels, source ordering requirements and train/validation splits.
 
 ## Python API: optimize, stream, verify
 
-Save as `litdata_smoke.py` and run with the environment's Python. This test writes
-only temporary output and verifies values and batching:
+For images, adapt this example to the user's manifest. It expects JSONL records
+with `image`, `label` and `split` fields; other fields such as captions survive.
+Image paths are relative to the manifest. Use a new output directory for each
+dataset version. Save as a Python file so worker imports use the main guard:
 
 ```python
+import json
+import random
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from litdata import optimize, StreamingDataset, StreamingDataLoader
+
+from litdata import Image, optimize, StreamingDataset, StreamingDataLoader
 
 
-def prepare(i):
-    return {"index": i, "value": i * 2}
+def prepare(row):
+    return {**row, "image": Image(path=row["image"])}
 
 
 def main():
-    with TemporaryDirectory(prefix="litdata-smoke-") as tmp:
-        output = str(Path(tmp) / "optimized")
-        optimize(fn=prepare, inputs=list(range(12)), output_dir=output,
-                 num_workers=1, chunk_size=4)
-        dataset = StreamingDataset(input_dir=output, shuffle=False)
-        assert len(dataset) == 12
-        assert [int(dataset[i]["value"]) for i in range(12)] == list(range(0, 24, 2))
-        loader = StreamingDataLoader(dataset, batch_size=3, num_workers=0)
-        assert sum(len(batch["index"]) for batch in loader) == 12
-        print("PASS: 12 samples, values and batches verified")
+    manifest = Path("manifest.jsonl").resolve()
+    rows = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+    for row in rows:
+        row["image"] = str(manifest.parent / row["image"])
+    for split in sorted({row["split"] for row in rows}):
+        inputs = [row for row in rows if row["split"] == split]
+        random.Random(42).shuffle(inputs)
+        optimize(fn=prepare, inputs=inputs, output_dir=f"optimized-v1/{split}",
+                 num_workers=2, chunk_bytes="64MB", compression=None)
+    train = StreamingDataset("optimized-v1/train", shuffle=True, drop_last=False)
+    loader = StreamingDataLoader(train, batch_size=8, num_workers=2)
+    batch = next(iter(loader))
+    print("first batch:", batch["image"].shape, batch["label"])
 
 
 if __name__ == "__main__":
     main()
 ```
 
-Choose exactly one of `chunk_size` or `chunk_bytes`. Before scaling a conversion,
-verify `index.json`, sample count, decoded labels/values and a small full loader
-iteration. Use separate trial output, local cache and persistent dataset paths.
+`Image(path=...)` keeps existing compressed bytes. Adding `quality` or `format`
+can re-encode them. Plain decoded PIL images can expand into raw pixels; avoid
+that as a storage default. Use lossless encoding for masks or exact pixel values.
+Different image sizes need a training transform or collator before stacking.
+
+Start with 64 MB chunks and two workers; increase workers after the sample works.
+Choose exactly one of `chunk_size` or `chunk_bytes`. JPEG/PNG are already compressed,
+so start with no additional chunk compression. For text or numeric data, compare
+supported `zstd` compression on a representative sample before choosing it.
+Measure chunks **plus indexes** against source bytes; optimized storage can be
+slightly larger than existing JPEGs while far smaller than decoded RGB arrays.
+
+Before scaling a conversion,
+check that `index.json` exists, use `len(StreamingDataset(path))` for sample counts,
+and verify decoded labels/values with a small full loader iteration. Do not depend
+on the private index schema. Use separate trial output, cache and persistent paths.
 If validation fails, fix and rerun the small case before processing the full dataset.
 
 ## Example workflows
 
 ### Prepare images for training
 
-Read [media serialization](references/using-litdata.md#3-images-media-types--serializers).
-Prefer supported compressed image wrappers/serializers over decoded PIL pixels.
-Keep captions as text and labels with each sample. Select wrappers by modality;
-a path string does not always serialize file contents. Audio/video decoders may
-need a custom collator. Verify dimensions, labels, dtype and batch structure.
+Use the example above for existing JPEG/PNG files; it needs no additional reference.
+Read [media serialization](references/using-litdata.md#3-images-media-types--serializers)
+for other modalities or custom encoding. A path string alone does not always
+serialize file contents. Verify dimensions, labels, dtype and batch structure.
 
 ### Stream a bucket on a Studio
 
@@ -148,8 +169,9 @@ worker plus the merged index. Local serialization tests need no cluster.
 
 ## Verify and report
 
-Report changed code/configuration, dataset/output location, versions and actual
-validation. A preprocessing test must verify decoded batches; remote reads must
+Report changed code/configuration, dataset/output location, runtime versions and
+assertion results. Add environment inventories or file hashes when the task needs
+them. A preprocessing test must verify decoded batches; remote reads must
 use the intended workers; resume must verify sample continuity. Distinguish local
 validation from cloud or distributed execution.
 

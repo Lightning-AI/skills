@@ -1,0 +1,139 @@
+{
+  "date": "2026-10-14",
+  "source": "Actual Codex session JSONL token_count events, tool calls and timestamps",
+  "baseline_commit": "3c90141e01839afb51e70e751436836ff5a42945",
+  "snapshot_hash_method": "SHA-256 of sorted SKILL.md and references/*.md: relative path, NUL, bytes, NUL",
+  "trials": [
+    {
+      "task": "photo",
+      "variant": "original",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "outcome": "passed",
+      "skill_snapshot_sha256": "abba12b7786a9c6ace932adc8aaaa32c60b84cd0d06cd6b189b9459398f8ed1c",
+      "entrypoint_sha256": "aafa5f06f63c54dd94c617f93c8bf94de201c09ee530bc30201cd54b037498f3",
+      "duration_seconds": 77.08,
+      "tool_round_trips": 13,
+      "tool_operations": 13,
+      "tools": {
+        "exec_command": 9,
+        "write_stdin": 4
+      },
+      "tokens": {
+        "input_tokens": 608974,
+        "cached_input_tokens": 557568,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 4843,
+        "reasoning_output_tokens": 1219,
+        "total_tokens": 613817
+      },
+      "uncached_input_tokens": 51406,
+      "peak_input_tokens": 49280
+    },
+    {
+      "task": "photo",
+      "variant": "first-revision",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "outcome": "passed",
+      "skill_snapshot_sha256": "ab02af105fb892204c32dc5f7f63909b5312526bf3347058c2d2c1d339c0fd7d",
+      "entrypoint_sha256": "32e2c55ae62956018813de45f45b5705d65ca7874a47bb43743d62a980503864",
+      "duration_seconds": 101.23,
+      "tool_round_trips": 19,
+      "tool_operations": 19,
+      "tools": {
+        "exec_command": 12,
+        "write_stdin": 5,
+        "apply_patch": 2
+      },
+      "tokens": {
+        "input_tokens": 873994,
+        "cached_input_tokens": 844800,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 6536,
+        "reasoning_output_tokens": 1737,
+        "total_tokens": 880530
+      },
+      "uncached_input_tokens": 29194,
+      "peak_input_tokens": 50658
+    },
+    {
+      "task": "photo",
+      "variant": "final-revision",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "outcome": "passed",
+      "skill_snapshot_sha256": "6b2a90db6d446e531f2f2766222cdc615e35e26c49368d6e4d290dc5e1406fc1",
+      "entrypoint_sha256": "7e5eb3d52aead4269c4ea26720b127ed5d0bb41f07396fd783a1ecf7fd0c793e",
+      "duration_seconds": 58.53,
+      "tool_round_trips": 10,
+      "tool_operations": 10,
+      "tools": {
+        "exec_command": 7,
+        "write_stdin": 3
+      },
+      "tokens": {
+        "input_tokens": 441001,
+        "cached_input_tokens": 425216,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 3274,
+        "reasoning_output_tokens": 555,
+        "total_tokens": 444275
+      },
+      "uncached_input_tokens": 15785,
+      "peak_input_tokens": 43245
+    },
+    {
+      "task": "storage-pipeline",
+      "variant": "original",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "outcome": "failed",
+      "skill_snapshot_sha256": "86e7a3a2b50517866cf35a50d58b6f632c46e62f4d44c944df3c670c5aa10fb9",
+      "entrypoint_sha256": "77fe3d945db1651f8cf07f4b1693c1d14a5ab90da634d2fc35a22cba59f3fd44",
+      "duration_seconds": 814.94,
+      "tool_round_trips": 93,
+      "tool_operations": 93,
+      "tools": {
+        "exec_command": 82,
+        "write_stdin": 3,
+        "sleep": 8
+      },
+      "tokens": {
+        "input_tokens": 8091231,
+        "cached_input_tokens": 7937536,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 38131,
+        "reasoning_output_tokens": 17578,
+        "total_tokens": 8129362
+      },
+      "uncached_input_tokens": 153695,
+      "peak_input_tokens": 129249
+    },
+    {
+      "task": "storage-pipeline",
+      "variant": "revision",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "outcome": "workflow-and-files-passed-registration-pending",
+      "skill_snapshot_sha256": "27c5f82624bd4992a804356730f3708797b209bd0a85dc9c3823e65d4e603a65",
+      "entrypoint_sha256": "9ebfa97035746112d0c6123668042320b9d84f611ff948b6054cacf3f72a79e4",
+      "duration_seconds": 491.87,
+      "tool_round_trips": 41,
+      "tool_operations": 41,
+      "tools": {
+        "exec_command": 41
+      },
+      "tokens": {
+        "input_tokens": 2404665,
+        "cached_input_tokens": 2342400,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 13576,
+        "reasoning_output_tokens": 3254,
+        "total_tokens": 2418241
+      },
+      "uncached_input_tokens": 62265,
+      "peak_input_tokens": 71445
+    }
+  ]
+}

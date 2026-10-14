@@ -86,6 +86,9 @@ known version as well as the root listing; do not assume root deletion removes
 children omitted from that listing. Delete those exact children first and verify
 both listings are empty. Do not delete a user's workflow to stop
 one execution. Deleting a pipeline can delete its run history.
+Save job IDs from `.statuses[].resourceId` before deleting the pipeline. Delete
+those test jobs separately and verify absence; pipeline deletion alone is not
+proof of job cleanup. The job delete CLI expects a name; use the API for IDs.
 
 ```bash
 SCHEDULED_RUN='verified-test-child-id'
@@ -94,5 +97,12 @@ lightning api "/v1/projects/$PID/pipelines/$ROOT" -X DELETE
 lightning api "/v1/projects/$PID/pipelines" -X GET -f originalPipelineId="$ROOT"
 lightning api "/v1/projects/$PID/schedules" -X GET -f parentResourceId="$ROOT"
 lightning api "/v1/projects/$PID/pipelines" -X GET -f parentPipelineId="$VERSION"
+JOB='verified-test-job-id'
+lightning api "/v1/projects/$PID/jobs/$JOB" -X DELETE
+lightning api "/v1/projects/$PID/jobs/$JOB"
 ```
 
+Job GET should return 404. A deleted pipeline has returned HTTP 500 with
+`failed to get pipeline: not found`; verify its absence from the filtered list
+as well. Other 500 errors do not prove deletion. For storage created by this test,
+also follow [storage cleanup](storage-workflows.md#remove-disposable-data).

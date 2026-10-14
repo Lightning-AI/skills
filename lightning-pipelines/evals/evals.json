@@ -1,0 +1,57 @@
+{
+  "skill_name": "lightning-pipelines",
+  "evals": [
+    {
+      "id": 1,
+      "name": "compose-with-lightning-storage",
+      "priority": "primary",
+      "prompt": "Build and run a simple prepare -> consume pipeline. Prepare writes 100 records and a freshly generated marker into a unique folder in lightning_storage. Consume reads those actual persisted records and marker, verifies the record count and values, and writes a summary back into that folder. Show that both steps ran as separate jobs and the second received the first step\u2019s data. Download the summary and logs, then clean up only this test\u2019s pipeline/jobs and storage files. Leave a small runnable example and a concise report.",
+      "expected_output": "Two successful dependent jobs exchange actual stored data; downloaded summary and logs prove the transfer; test resources are removed.",
+      "files": [],
+      "assertions": [
+        "The project, selected cloud and unique storage prefix match the authorized test scope.",
+        "Prepare and consume complete as separate jobs with the requested dependency.",
+        "Prepare creates a runtime marker not known in advance to the consumer.",
+        "The consumer reads the persisted 100 records, validates their values and emits the same runtime marker.",
+        "The downloaded summary matches consumer logs and the producer marker.",
+        "Both complete step logs and a runnable pipeline example are saved locally.",
+        "API/storage readback verifies that only the test resources were removed."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "replace-and-execute-schedule",
+      "prompt": "In the authorized test teamspace, create a disposable two-step CPU pipeline that prints a different verifiable marker in each step. Schedule it, then update the step markers and schedule once. Prove there is only one current schedule and it runs the updated steps, using an actual scheduled execution. Finally change only its timing to Monday 05:40 UTC and prove that timing edit did not launch another run. Leave a compact handoff with its identity and current state for another agent to inspect and clean up.",
+      "expected_output": "A completed scheduled run with both updated markers, one schedule targeting the updated version, a timing-only edit without another submission, and a handoff containing resource IDs and evidence paths.",
+      "files": [],
+      "assertions": [
+        "The resolved project belongs to the requested owner/teamspace.",
+        "The updated workflow retains both steps and their dependency.",
+        "Exactly one schedule remains across the root and known versions; it targets the new version and the replaced schedule ID is absent.",
+        "A completed scheduled child has the expected parentPipelineId and scheduleId, and both step logs contain the updated markers.",
+        "After the timing-only edit, cron is 40 5 * * 1 in UTC and the existing schedule ID and target are unchanged.",
+        "Run IDs before and after the timing-only edit are unchanged.",
+        "The handoff identifies project, root, versions, scheduled child, step jobs, current schedule and remaining cleanup."
+      ],
+      "priority": "secondary"
+    },
+    {
+      "id": 3,
+      "name": "resume-export-and-cleanup",
+      "prompt": "Continue from handoff.json in the task directory. Retrieve the completed scheduled execution and export its full step logs for review. Confirm that the logs belong to the requested teamspace and updated pipeline version. Then remove this disposable test pipeline and its schedules, verify that no test work remains, and report what you verified. Do not submit another run.",
+      "expected_output": "Logs from the correct scheduled child, a manifest connecting them to the project/root/version/job IDs, and API readback proving cleanup without another submission.",
+      "files": [
+        "handoff.json"
+      ],
+      "assertions": [
+        "The agent reads current API state before acting on the handoff.",
+        "The exported logs match the scheduled child and both expected markers.",
+        "The export manifest records the project, root, version, run and job identities.",
+        "No new pipeline version or execution is submitted.",
+        "Schedules are removed and active test work is stopped before deletion.",
+        "Root and per-version child listings contain no remaining test runs or schedules."
+      ],
+      "priority": "secondary"
+    }
+  ]
+}
