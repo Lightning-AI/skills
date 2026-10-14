@@ -43,6 +43,12 @@ upgrade a training environment to upstream main.
 
 ## Choose the data path
 
+Keep an existing supported dataset format. For native files, start with
+`StreamingRawDataset` when the installed version supports it; use `optimize` when
+repeated training reads or a measured I/O bottleneck justify preprocessing. For
+an existing optimized dataset, go directly to `StreamingDataset` and
+`StreamingDataLoader`. Use the table for task-specific exceptions.
+
 | Goal | Start with | Detail |
 |---|---|---|
 | Train from existing native files without preprocessing | `StreamingRawDataset` plus PyTorch `DataLoader`, when available | [Usage §10](references/using-litdata.md#10-format-specific-streaming) |
