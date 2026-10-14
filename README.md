@@ -1,6 +1,6 @@
 # Lightning AI Agent Skills
 
-Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, and up-front cost estimates for any of it.
+Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, pipelines, LitData dataset workflows, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, and up-front cost estimates for any of it.
 
 ## Skills
 
@@ -13,16 +13,18 @@ Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any ag
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
+| [`lightning-pipelines`](lightning-pipelines/SKILL.md) | Build DAGs, update schedules, inspect exact runs, retrieve step logs and clean up workflows |
+| [`lightning-litdata`](lightning-litdata/SKILL.md) | Preprocess and stream training datasets, handle media, resume loaders and diagnose cloud I/O with the curated LitData reference set |
 
 **Tutorial:** [teach a 4B model to call tools on a cloud GPU](examples/finetune-eval/README.md). It starts from a Mac or a Claude cloud session and one chat message.
 
-All skills are built around the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI, plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap.
+Platform skills use the [`lightning-sdk`](https://pypi.org/project/lightning-sdk/) Python package and its `lightning` CLI, plus the raw `lightning api` escape hatch for anything the SDK doesn't wrap. The LitData skill uses `litdata` and PyTorch; local dataset processing needs no Lightning account.
 
 ## Install
 
 ### Claude Code plugin
 
-This repo is also a [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so Claude Code can install all seven skills as one plugin and keep them updated. The plugin also adds live job progress bars above the prompt. From a shell (no Claude session needed, so it works in scripts and headless setups):
+This repo is also a [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so Claude Code can install all nine skills as one plugin and keep them updated. The plugin also adds live job progress bars above the prompt. From a shell (no Claude session needed, so it works in scripts and headless setups):
 
 ```bash
 claude plugin marketplace add Lightning-AI/skills
@@ -63,7 +65,7 @@ Avoid `--all` unless you mean it: it selects every skill *and* every agent on th
 Or copy the skill folders straight into your agent's skills directory:
 
 ```bash
-SKILLS="lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway lightning-artifacts lightning-cost-estimation"
+SKILLS="lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway lightning-artifacts lightning-cost-estimation lightning-pipelines lightning-litdata"
 
 # Claude Code (project-level)
 mkdir -p .claude/skills && cp -r $SKILLS .claude/skills/
@@ -75,7 +77,7 @@ cp -r $SKILLS ~/.claude/skills/
 ## Prerequisites
 
 - Python 3.11+ with `uv` or `pip`. There's no need to install the SDK first: skills use the `lightning` CLI in your current environment, installing or upgrading `lightning-sdk` there if it's missing or too old (`uv tool install lightning-sdk` or `uvx` are fallbacks)
-- A Lightning AI account. Sign in once, where the agent runs:
+- A Lightning AI account for cloud operations (not required for local LitData processing). Sign in once, where the agent runs:
   - **On your machine:** `lightning login` (browser sign-in, saved for later commands)
   - **Headless (CI, cloud agents, no browser):** set `LIGHTNING_API_KEY` (plus `LIGHTNING_USER_ID`, optional) through that environment's secrets
   - **Inside a Studio:** nothing to do, you're already signed in
