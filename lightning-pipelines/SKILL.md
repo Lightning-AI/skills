@@ -7,22 +7,16 @@ compatibility: Requires Python with uv or pip, lightning-sdk, network access to 
 
 # Lightning AI Pipelines
 
-Use pipelines to run preparation, training and other dependent steps as one workflow.
-`Pipeline.run()` submits a new version **and starts it immediately**, including when
-schedules are supplied. A schedule starts a copy of the version it targets.
+`Pipeline.run()` submits a new version **and starts it immediately**, even with
+schedules. A schedule starts a copy of its target version.
 
-Choose the operation before making changes:
-
-| User wants | Action | Evidence of success |
+| Request | Use | Verify |
 |---|---|---|
-| Run new or changed steps | Submit with `Pipeline.run()` | Selected run completes; expected step output exists |
-| Change only when a pipeline runs | Update the existing schedule with PUT | Cron, timezone and target read back correctly; no new run submitted |
-| Apply new steps to future scheduled runs | Submit the version and replace its schedules | One intended schedule set remains, targeting the new version |
-| Explain a failed execution | Inspect the exact run and failing step | Job ID, failure evidence and relevant logs match that execution |
-| Stop current work | Stop the selected run | Run reaches a terminal state; future schedules are handled separately |
-
-Reuse the user's teamspace and resource choices. Resolve missing IDs from the API;
-ask only when several resources fit and the request does not identify one.
+| Run new or changed steps | `Pipeline.run()` | Run state and expected step output |
+| Change only the timing | Schedule PUT | Cron, timezone, target and next execution |
+| Use new steps for future runs | Submit version and replace schedules | Desired schedules target the new version; old IDs are absent |
+| Explain a failure | Exact run and step logs | Project, run and job IDs match the requested execution |
+| Stop current work | Run PUT | Terminal state; schedules remain active unless removed separately |
 
 ## Setup & auth
 
@@ -54,50 +48,26 @@ its `python`. If the CLI came from a uv tool or `uvx` fallback instead, run one-
 `uv run --with lightning-sdk python script.py`. For code that stays in the user's project, ask,
 then declare `lightning-sdk` as a dependency with the project's own tool (`uv add`, `poetry add`).
 
-### First run: no CLI or account yet
-
-If the task calls for Lightning and the CLI is missing, run the setup block above,
-then check authentication:
-
-```bash
-lightning auth whoami || echo "not signed in"
-```
-
-If nobody is signed in, choose the path that fits the machine:
-
-- **Has a browser (a laptop):** run `lightning login`. It opens lightning.ai, where a new user can
-  create a free account. The command returns once the browser sign-in completes, so give it a few
-  minutes and tell the user a tab is opening.
-- **No browser (Claude Code cloud session, CI, remote box):** ask the user to sign up at
-  lightning.ai, then copy `LIGHTNING_USER_ID` and `LIGHTNING_API_KEY` from their avatar →
-  **Global Settings → Keys → Login via CLI**. They go in as environment variables where the agent
-  runs. **Never ask for the key in chat.** In a Claude Code cloud session, both values belong in
-  the cloud environment's **Environment variables**. The same dialog's **Network access** must be
-  **Custom**, allowing `lightning.ai` and `*.lightning.ai` with the default list kept. Both
-  changes take effect in a **new** session only.
-
-Then resolve the teamspace from the request and memberships. If exactly one fits,
-continue with it.
+If authentication fails, check `lightning auth whoami`. Use `lightning login` on
+a machine with a browser; in headless environments, configure `LIGHTNING_API_KEY`
+through the environment's secret settings. Never request keys in chat.
 
 ## Resolving org and teamspace (do this first)
 
-Use the user's explicit `owner/teamspace`, configured default, or environment.
-If none identifies one teamspace, list memberships and ask once; reuse the answer.
-Do not guess an organization from a teamspace name. Membership rows can duplicate
-one project through user and organization access: deduplicate by `projectId`.
+Reuse the requested `owner/teamspace`, environment or configured default.
+If ambiguous, list memberships and ask which one; deduplicate by `projectId`.
 
 ```bash
-lightning api /v1/memberships -q '.memberships[] | [.ownerType,.ownerId,.name,.projectId] | @tsv'
 lightning config get teamspace
+lightning api /v1/memberships -q '.memberships[] | [.ownerType,.ownerId,.name,.projectId] | @tsv'
 ```
 
-Resolve an organization owner ID with `lightning api /v1/orgs/<ownerId>` (`.name`).
-For a personal owner, use `/v1/users/search -X GET -f query=<ownerId>` and match
-`.users[].id` exactly before taking `.username`. A fuzzy match is not identity proof.
-For an explicit slug, Python `Teamspace("owner/teamspace").id` resolves the project.
+For an organization, GET `/v1/orgs/<ownerId>` and use `.name`. For a personal
+owner, GET `/v1/users/search` with `query=<ownerId>` and match `.users[].id`
+exactly before taking `.username`. Python `Teamspace("owner/teamspace").id`
+also resolves an explicit slug.
 
-Replace the example values below with the verified selection. Use that same `$PID`
-and `$TS` throughout the task:
+Replace these example values with the verified selection:
 
 ```bash
 TS=owner/teamspace
@@ -105,36 +75,29 @@ PID='verified-project-id'
 lightning api "/v1/projects/$PID/clusters" -q '.clusters[] | [.id,.name,.status.phase] | @tsv'
 ```
 
-Choose the user's cloud or the teamspace default; confirm it is usable. Do not
-silently move a data-bearing workflow to another cloud to solve a startup failure.
+Use the requested cloud or teamspace default. Keep data-bearing workflows on
+their intended cloud; a startup failure does not authorize moving their data.
 
 ## CLI reference
 
-`lightning pipeline` currently exposes **logs**, not create/run/list/stop commands.
-Use Python for constructing DAGs and [API operations](references/operations.md)
-for discovery and lifecycle changes.
-Use exact run IDs for investigations; resolving a display name can select another run.
+`lightning pipeline` exposes **logs**, not create/run/list/stop commands.
+Use Python to submit DAGs and [API operations](references/operations.md) to
+inspect runs or change schedules/lifecycle state.
 
 ```bash
-lightning pipeline --help
 lightning pipeline logs "$RUN" prepare --teamspace "$TS" --tail 100 --timestamps
 lightning pipeline logs "$RUN" prepare --teamspace "$TS" --follow
 lightning pipeline logs "$RUN" prepare --teamspace "$TS" --query error --severity error
 ```
 
-The second positional argument is the **step name** in `.statuses[].name`, not
-its generated job name. For download syntax, inspect `lightning pipeline logs download --help`.
-Deployment steps require deployment logs; multi-machine steps may need `--rank`.
-A lifecycle line saying "workload failed" is not the underlying Python traceback.
+Use the exact run ID. The second argument is `.statuses[].name`, not the
+generated job name. Inspect `lightning pipeline logs download --help` for export.
+Deployment steps need deployment logs; multi-machine steps may need `--rank`.
 
 ## Python SDK
 
-### Submit an image workflow
-
-Use the SDK in the same environment as the CLI. A unique name creates a disposable
-pipeline; reuse the name only when updating that existing workflow is intended.
-This one-step example needs no Studio or shared filesystem. Replace the teamspace
-and pipeline name before submitting; choose a unique name for a disposable test:
+Replace the teamspace and name. Use a unique name for a test; reuse an existing
+name only to update that pipeline. This image example needs no Studio:
 
 ```python
 from lightning_sdk import Machine, Teamspace
@@ -148,129 +111,80 @@ pipeline.run(steps=[
 ])
 ```
 
-Submission success only proves the API accepted the DAG. Read the run and step
-states until terminal with a deadline appropriate to the workload. Do not resubmit
-while polling. Inspect logs and expected output before declaring success; on timeout,
-report the current state and whether the job is still running.
+For Studio snapshots, shared files, explicit DAGs or multi-machine steps, read
+[Studio and multi-step workflows](references/studio-workflows.md).
+Dependencies control execution order; they do not transfer files. Shared
+filesystem mode requires supported AWS/GCP placement. On Lightning Cloud image
+jobs, use `shared_filesystem=False` and explicit durable outputs when needed.
 
-### Studio preparation then training
-
-The scripts must already exist in the chosen Studio. Construct `Studio` with the
-same explicit teamspace. A Studio name is not a local directory.
-
-```python
-from lightning_sdk import Machine, Studio, Teamspace
-from lightning_sdk.pipeline import JobStep, Pipeline, Schedule
-
-ts = Teamspace("owner/teamspace")
-studio = Studio("train-env", teamspace=ts)
-pipeline = Pipeline(name="training-on-studio-env", teamspace=ts,
-                    studio=studio, shared_filesystem=True)
-pipeline.run(
-    steps=[
-        JobStep(name="prepare", command="sh /teamspace/studios/this_studio/prepare_data.sh",
-                machine=Machine.CPU_X_16, max_runtime=3600),
-        JobStep(name="training", command="sh /teamspace/studios/this_studio/training.sh",
-                machine=Machine.RTXP_6000, wait_for=["prepare"], max_runtime=7200),
-    ],
-    schedules=[Schedule("40 5 * * 1", name="weekly-training")],
-)
-```
-
-Omitted `timezone` means UTC. Do not pass `timezone="UTC"`: the SDK's explicit
-allow-list rejects that spelling. A named zone such as `Europe/London` follows DST.
-`parallel_runs=False` is the schedule default. Read back the value: production
-returned false even when the tested SDK submitted true; do not promise concurrent
-scheduled execution from the requested value alone.
-
-With the default `dependency_mode="linear"`, steps without `wait_for` chain in
-list order. For a DAG, use `dependency_mode="explicit"` and explicit dependency
-names: two independent preparation steps can have `wait_for=[]`, with training
-waiting for both. Step names must be unique and dependencies must reference them.
-
-A dependency does **not** transfer files. Shared filesystem mode needs a supported
-AWS/GCP cloud and compatible placement; the SDK raises for unsupported clouds.
-Without it, choose an explicit durable output location and make downstream steps
-read it. For Lightning Cloud image smoke tests use `shared_filesystem=False`.
-
-`JobStep(num_machines=N)` represents a multi-machine job. `DeploymentStep` adds
-serving to the DAG; deployments have their own lifetime, auth and cleanup. Inspect
-the installed signatures before configuring those less common steps; do not assume
-that every `Job.run` or `Deployment.start` option has a pipeline equivalent.
+After submission, poll the exact run with a workload-appropriate deadline.
+Do not resubmit while polling. Check terminal state, step logs and expected
+outputs. On timeout, report the current state and whether work is still running.
 
 ## Example workflows
 
-### "Move the weekly run to Monday at 05:40 UTC"
+### Change only the weekly schedule
 
-Use the [schedule-only update](references/operations.md#edit-a-schedule-without-starting-a-run). Confirm the
-selected schedule, timezone and target, then change only the requested fields.
-Read them back and report the next execution time. Do not call `Pipeline.run()`
-for a cron-only change: that would start an unrequested execution.
+Follow the [schedule-only update](references/operations.md#edit-a-schedule-without-starting-a-run).
+Preserve the target and change only requested fields. Read back cron, timezone,
+target and next execution. Do not submit a pipeline version for a timing-only edit.
 
-### "Use the updated training steps for future runs"
+### Apply updated steps to future runs
 
-1. Resolve the current version, root and ancestors. Record existing schedule IDs,
-   targets, cron expressions and timezones before submitting.
-2. Submit the intended steps and complete desired schedule set with `Pipeline.run()`.
-   This starts one immediate execution as well as configuring future ones.
-3. List schedules under the root and ancestors. Verify the desired schedules target
-   the new version, remain grouped under the root, and replaced IDs are absent.
-4. Report configuration verification separately from execution verification. For an
-   end-to-end test, observe a scheduled child whose `scheduleId` matches and whose
-   `parentPipelineId` is the intended version; check its step output. Do not move a
-   user's weekly schedule forward merely to finish a test sooner.
+1. Resolve the version, root and ancestors. Record schedule IDs, targets, cron
+   expressions and timezones before submission.
+2. Submit the steps and complete desired schedule set with `Pipeline.run()`.
+3. List schedules under the root and ancestors. Verify new targets/root grouping
+   and absence of replaced IDs.
+4. For an execution test, verify a child's `scheduleId`, `parentPipelineId` and
+   step output. Otherwise report configuration verification only. Keep a user's
+   weekly schedule intact; use a disposable pipeline for an earlier test.
 
-**Version boundary:** SDK PR [#201](https://github.com/Lightning-AI/sdk/pull/201)
-fixes repeated updates leaving schedules grouped under intermediate versions.
-Until the installed release includes that change, do not promise automatic replacement.
-After verifying ownership, remove obsolete schedules explicitly using their exact IDs.
-The fixed implementation treats omitted `schedules` or `[]` as removal; preserving
-schedules requires passing the intended schedules again. Replacement is several API
-calls, not a transaction: after a partial failure inspect both runs and schedules
-before retrying. Avoid concurrent updates to one pipeline.
+SDK [PR #201](https://github.com/Lightning-AI/sdk/pull/201) fixes duplicate schedules
+across repeated updates. Check whether the installed release includes it before
+relying on replacement. Older versions need explicit removal of verified obsolete
+schedule IDs. In the fixed version, omitted `schedules` or `[]` removes schedules;
+pass the desired schedules again to retain them. Replacement uses several API
+calls: inspect partial results before retrying and avoid concurrent updates.
 
-### "Why did Monday's training fail?"
+### Diagnose a failed execution
 
-List runs under the original root and scheduled version, select the requested
-timestamp/ID, and read its statuses. Fetch the failing step's logs. Confirm project ID, pipeline root,
-run ID and job ID before exporting anything to a customer. Do not substitute
-logs from the newest run or another similarly named pipeline.
-
-If the job never started, inspect its `message` and `serverError`; a machine
-startup failure is not a training exception. `Stopping` is not terminal, and the
-SDK can refuse logs in that state. Poll with a deadline, then report the exact
-state, resource IDs and what remains unknown.
+[Find the run](references/operations.md#find-runs-and-schedules) by timestamp/ID
+under both the root and scheduled version. Read statuses and fetch the failing
+step's logs. Before customer export, verify project, root, run and job IDs.
+For a job that never started, inspect `message` and `serverError`.
+`Stopping` is not terminal; the SDK can refuse logs until it finishes.
 
 ## Raw API fallback
 
-Use [Pipeline API operations](references/operations.md) when the task needs:
+Load only the recipe the task needs:
 
-- [Run or schedule discovery](references/operations.md#find-runs-and-schedules):
-  resolve exact IDs, walk version ancestry and find scheduled children.
-- [A schedule-only edit](references/operations.md#edit-a-schedule-without-starting-a-run):
-  change cron settings while preserving the version target.
-- [Stopping or unscheduling](references/operations.md#stop-a-run-or-remove-a-schedule):
-  stop current work or remove future occurrences as separate operations.
-- [Test cleanup](references/operations.md#cleanup): remove the recorded test
-  resources and verify both root and scheduled-child listings.
+- [Discovery](references/operations.md#find-runs-and-schedules): IDs, ancestry, scheduled children and pagination.
+- [Schedule editing](references/operations.md#edit-a-schedule-without-starting-a-run): GET, change requested fields, PUT, read back.
+- [Stopping or unscheduling](references/operations.md#stop-a-run-or-remove-a-schedule): distinct lifecycle operations.
+- [Cleanup](references/operations.md#cleanup): remove recorded test resources and verify their absence.
 
 ## Gotchas
 
-- `Pipeline.stop()` in SDK commit `b2dc858` calls the generated update method
-  without project/run IDs and raises `TypeError`. Use the [stop recipe](references/operations.md#stop-a-run-or-remove-a-schedule)
-  until your installed SDK fixes it. The API enum is `PIPELINE_STATE_STOP`, not `stop`.
-- Root grouping and schedule target are different fields. A schedule can appear
-  under the correct UI pipeline while still targeting an old version.
-- A successful create response is not a completed job. Record the actual
-  scheduled run and output when validating a schedule change.
-- Empty historical logs do not prove that a workload emitted nothing. Keep the
-  lifecycle response and job ID, and distinguish missing logs from the job failure.
+- Omit `timezone` for UTC. The tested SDK rejects explicit `timezone="UTC"`;
+  named zones such as `Europe/London` follow DST.
+- Read back `parallel_runs`: production returned false even when true was
+  submitted. Do not infer concurrency from the request alone.
+- `parentResourceId` groups schedules under a root; `resourceId` chooses the
+  version to execute. Correct UI grouping does not prove the correct target.
+- `Pipeline.stop()` at SDK commit `b2dc858` raises `TypeError` because its update
+  call lacks IDs. Use the [stop recipe](references/operations.md#stop-a-run-or-remove-a-schedule)
+  with `PIPELINE_STATE_STOP` until the installed SDK fixes it.
+- Lifecycle messages and missing historical logs are not workload tracebacks.
+  Preserve the job ID and distinguish unavailable logs from an application failure.
 
-## Report the result
+## Report and resume
 
-Return the pipeline link or exact run ID, teamspace, operation performed and
-verification evidence. For schedules, include cron, timezone, target version and
-next execution time. State whether an execution was observed or only configuration
-was verified. For tests, say which resources were removed and identify any still
-running. For failures, include the relevant error and log location without
-substituting lifecycle messages for workload output.
+Report teamspace, run link/ID, change, observed state/output and remaining work.
+For schedules, include cron, timezone, target and next execution; distinguish
+configuration readback from an observed scheduled execution. For tests, report
+cleanup and any resources still running.
+
+For a task spanning a long wait or handoff, save the project/root/run/job/schedule
+IDs, schedule snapshot and last verified state in a local task record. On resume,
+reload it and GET current state before deciding whether to submit or retry.

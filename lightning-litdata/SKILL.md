@@ -7,20 +7,13 @@ compatibility: Requires Python with uv or pip and litdata with PyTorch. Cloud da
 
 # Lightning AI LitData
 
-Use LitData to turn source data into validated training batches, stream existing
-datasets, or diagnose the I/O that limits training. Local processing needs no
-Lightning account. Private cloud storage needs credentials for that storage;
-Lightning multi-node processing also needs an authorized teamspace.
-
-Start with the task table below. Read the relevant section of
-[the usage cookbook](references/using-litdata.md) when choosing an API or writing
-an example; load specialized references only when needed. The 15 bundled guides
-cover advanced workflows without requiring a LitData checkout.
+Turn source data into verified training batches or diagnose data-loading I/O.
+Local processing needs no Lightning account. Private storage needs its own
+credentials; Lightning multi-node processing also needs an authorized teamspace.
 
 ## Setup & version checks
 
-Use the project's existing environment and dependency manager. For a disposable
-local verification environment:
+Use the project's environment and retain its PyTorch/CUDA pins. For an isolated check:
 
 ```bash
 uv venv /tmp/litdata-check
@@ -28,52 +21,36 @@ uv pip install --python /tmp/litdata-check/bin/python litdata torch
 /tmp/litdata-check/bin/python -c "import litdata, torch; print(litdata.__version__, torch.__version__)"
 ```
 
-Do not replace a project's PyTorch/CUDA pins just to run an example. Install
-optional storage, image, audio or video dependencies only when that task requires
-them. Verify extras against the installed package metadata; older documentation
-uses both `extra` and `extras`; use only the extra declared by that version.
-
-These references are a snapshot of upstream development, not proof that every
-API exists in the latest PyPI wheel. Before using newer features, inspect the
-installed API (for example `hasattr(litdata, "StreamingRawDataset")` and
-`inspect.signature(litdata.optimize)`). Prefer the stable installed equivalent;
-if the task requires an unreleased feature, explain the version requirement
-before changing the dependency and pin the selected commit. Do not silently
-upgrade a training environment to upstream main.
+The references track upstream development. Check installed APIs with `hasattr`
+and `inspect.signature` before using newer features. Prefer supported installed
+APIs; explain and pin any required unreleased dependency. Install only needed
+extras, using the names declared by that package version.
 
 ## Choose the data path
 
-Keep an existing supported dataset format. For native files, start with
-`StreamingRawDataset` when the installed version supports it; use `optimize` when
-repeated training reads or a measured I/O bottleneck justify preprocessing. For
-an existing optimized dataset, go directly to `StreamingDataset` and
-`StreamingDataLoader`. Use the table for task-specific exceptions.
+Keep an existing supported format. For native files, start with
+`StreamingRawDataset` when available. Use `optimize` for repeated training reads
+or measured I/O bottlenecks. Read optimized data with `StreamingDataset` and
+`StreamingDataLoader`.
 
-| Goal | Start with | Detail |
-|---|---|---|
-| Train from existing native files without preprocessing | `StreamingRawDataset` plus PyTorch `DataLoader`, when available | [Usage §10](references/using-litdata.md#10-format-specific-streaming) |
-| Repeated epochs with optimized I/O | `optimize` → `StreamingDataset` → `StreamingDataLoader` | [Usage](references/using-litdata.md), [processing](references/processing.md) |
-| Transform files with side effects | `map` | [Processing](references/processing.md) |
-| Tokens, images, audio, video, graphs | Correct typed wrapper/serializer and collator | [Usage](references/using-litdata.md) |
-| Parquet, Hugging Face, or MDS | Existing format reader/indexer rather than unconditional re-encoding | [Usage §10](references/using-litdata.md#10-format-specific-streaming) |
-| Mix datasets, exact resume, distributed shuffling | Streaming loader and dataset composition | [Streaming](references/streaming.md) |
-| Stable sample keys, incremental updates | Key index and keyed access | [Keyed lookup](references/keyed-lookup.md) |
+| Task | Read only the relevant reference/section |
+|---|---|
+| Raw files, Parquet, HF or MDS | [Formats](references/using-litdata.md#10-format-specific-streaming) |
+| Optimize or map | [Processing](references/processing.md) |
+| Images, audio, video, tokens or graphs | [Media and serializers](references/using-litdata.md#3-images-media-types--serializers) |
+| Resume, shuffle or mix datasets | [Streaming](references/streaming.md) |
+| Stable keys and incremental updates | [Keyed lookup](references/keyed-lookup.md) |
 
-Inspect the existing data loader and configuration first. Establish the source
-format/location, expected batch structure, output destination and training setup.
-Ask only for missing choices that affect correctness or placement. Preserve labels,
-ordering requirements and train/validation splits; use a separate output directory
-for a trial conversion.
-
-Finish the requested workflow, not just the example: implement the data path,
-validate representative samples and batches, then report the artifact location
-and measured result. Scale preprocessing only after that small check passes.
+The [cookbook](references/using-litdata.md) is long: locate the needed heading
+before reading that section. Do not load all 15 reference files for one task.
+Inspect the existing loader/config first. Resolve source, expected batch shape,
+output destination and training setup; ask only for missing consequential choices.
+Preserve labels, source ordering requirements and train/validation splits.
 
 ## Python API: optimize, stream, verify
 
-Save the following as `litdata_smoke.py` and run it with the environment’s Python.
-The `__main__` guard is required for multiprocessing. The test writes to its own
-temporary directory, checks sample contents and batching, and cleans up afterward:
+Save as `litdata_smoke.py` and run with the environment's Python. This test writes
+only temporary output and verifies values and batching:
 
 ```python
 from pathlib import Path
@@ -102,108 +79,84 @@ if __name__ == "__main__":
     main()
 ```
 
-For real preprocessing, choose exactly one of `chunk_size` or `chunk_bytes`.
-Start with a representative small subset, inspect decoded samples and labels,
-then scale workers and data volume. Keep temporary/cache paths separate from
-persistent outputs. Verify `index.json`, sample count and a full small loader
-iteration; success of the preprocessing process alone does not validate training I/O.
+Choose exactly one of `chunk_size` or `chunk_bytes`. Before scaling a conversion,
+verify `index.json`, sample count, decoded labels/values and a small full loader
+iteration. Use separate trial output, local cache and persistent dataset paths.
+If validation fails, fix and rerun the small case before processing the full dataset.
 
 ## Example workflows
 
-### "Prepare my images for training"
+### Prepare images for training
 
-Read [media types and serializers](references/using-litdata.md#3-images-media-types--serializers). Prefer
-compressed image serialization (`Image`/`Jpeg` when available, or the installed
-version's supported JPEG serializer) over returning decoded PIL pixels, which
-can inflate storage. Keep captions as text and labels alongside images. A
-filepath string is not universally a media payload: select the appropriate
-wrapper for the modality. Audio/video decoder objects may require a custom
-collator; default tensor stacking is not a safe assumption.
+Read [media serialization](references/using-litdata.md#3-images-media-types--serializers).
+Prefer supported compressed image wrappers/serializers over decoded PIL pixels.
+Keep captions as text and labels with each sample. Select wrappers by modality;
+a path string does not always serialize file contents. Audio/video decoders may
+need a custom collator. Verify dimensions, labels, dtype and batch structure.
 
-Before the full conversion, decode a handful of examples and check dimensions,
-labels, dtype and batch structure. If the source is class-sorted, shuffle the
-input list with a fixed seed before optimize when full source mixing is required.
-Chunk-level and intra-chunk shuffling alone do not guarantee file-level mixing.
+### Stream a bucket on a Studio
 
-### "Stream my bucket on a Lightning Studio"
+Read [path resolution](references/resolver.md); load [Studio integration](references/lightning-studio.md)
+for teamspace mounts. Verify teamspace and connection. Pass supported URLs or
+connection paths to LitData so its resolver reads object storage directly.
+Size a writable local cache for free space, workers and chunks. Check batches
+with one worker, then the intended count. On auth failure, inspect credential
+scope and connection selection without printing tokens.
 
-Use [path resolution](references/resolver.md) and [Studio integration](references/lightning-studio.md).
-Confirm the requested owner/teamspace and connection; do not infer it from the
-first credential or membership. Pass the original supported cloud URL or Studio
-connection path into LitData so its resolver can reach object storage directly.
-Do not benchmark a manual read through the FUSE mount and call it LitData speed.
+### Resume training or mix datasets
 
-Use a writable local cache with an explicit budget appropriate to free space,
-workers and chunk sizes. Validate a few samples with one worker, then the intended
-worker count. If auth fails, inspect the selected connection and credential
-scope; do not print tokens or create new permissions as a workaround.
+Read [resume](references/using-litdata.md#5-shuffle-seed-drop_last-resume) or
+[composition](references/using-litdata.md#11-combine--parallel--cycle) as needed.
+Save/restore `StreamingDataLoader.state_dict()` with model/optimizer state;
+a seed alone does not restore a mid-epoch position. Verify sample IDs around the
+checkpoint and installed support for worker/world-size changes. Use weighted
+`CombinedStreamingDataset` for sampling mixtures; `ParallelStreamingDataset`
+for aligned sampling.
 
-### "Resume training / mix several datasets"
+### Diagnose a hang or throughput regression
 
-Read [shuffle and resume](references/using-litdata.md#5-shuffle-seed-drop_last-resume)
-and [dataset composition](references/using-litdata.md#11-combine--parallel--cycle);
-use [streaming internals](references/streaming.md) when diagnosing behavior.
-Save and restore the `StreamingDataLoader.state_dict()`
-alongside model/optimizer state; rebuilding the loader with a seed alone is not
-mid-epoch resume. Validate sample IDs around a checkpoint and check worker/world
-size support in the installed version. Choose weighted `CombinedStreamingDataset`
-versus aligned `ParallelStreamingDataset` from the requested sampling semantics,
-not merely because both accept several datasets.
-
-### "My data loader hangs or is slow"
-
-Start with [debugging](references/debugging.md). Use [cache lifecycle](references/cache-and-chunk-lifecycle.md)
-for eviction or prefetch problems and [benchmarking](references/benchmarking.md)
-for throughput measurements. Capture version, source/cache
-paths, worker count, cache limit, first traceback and the smallest failing batch.
-Compare `num_workers=0` with the intended setting before increasing timeouts.
-A late `FileNotFoundError` may be a failed prefetch worker, not a missing object.
-Separate cold download, warm cache, decode, collation and model compute. Report
-sample size, worker count, cache state and repetitions with throughput results.
+Start with [debugging](references/debugging.md). Read [cache lifecycle](references/cache-and-chunk-lifecycle.md)
+for prefetch/eviction problems or [benchmarking](references/benchmarking.md) for
+measurements. Record versions, source/cache paths, workers, cache limit and first
+traceback. Compare `num_workers=0` with the intended count before increasing timeouts.
+Separate cold downloads, warm cache, decoding, collation and model compute.
 
 ## Advanced references
 
-| Need | Read |
+| Trigger | Read |
 |---|---|
-| Remote optimize/map downloads and uploads, queues, fork behavior | [Data movement](references/data-movement.md) |
-| Lightning multi-node optimize/map orchestration and merged indexes | [Multi-node](references/multi-node.md) |
-| Exact env knob names and scope | [Environment variables](references/env-vars.md) |
-| Binary chunk layout, Cache, readers/writers and serializers | [Storage format](references/storage-format.md) |
-| Changing LitData implementation or adding a regression test | [Contributing](references/contributing.md), [testing](references/testing.md) |
+| Remote optimize/map I/O, queues or fork failures | [Data movement](references/data-movement.md) |
+| Lightning multi-node processing | [Multi-node](references/multi-node.md) |
+| Need an exact tuning knob | [Environment variables](references/env-vars.md) |
+| Chunk layout, Cache, reader/writer or serializer internals | [Storage format](references/storage-format.md) |
+| Editing LitData source or tests | [Contributing](references/contributing.md), [testing](references/testing.md) |
 
-Multi-node `optimize(num_nodes=...)` submits Lightning jobs; it is not equivalent
-to launching the same script with torchrun. Choose the authorized teamspace,
-cloud and machines, use durable shared outputs, and inspect every worker's
-outcome plus the merged index. Do not launch a cluster merely to test a local
-serialization change.
-
-## Verify and report
-
-| Task | Verify before calling it complete |
-|---|---|
-| Preprocess a dataset | Output index and sample count; decoded values, labels and batch structure |
-| Read remote data | Representative batches with the intended worker count; source and cache paths are correct |
-| Resume training | Sample IDs around the checkpoint show the intended continuation |
-| Improve performance | Same workload and cache conditions before/after; report repeated measurements |
-| Run multi-node processing | Every worker completes and the final merged index can be read |
-
-Return the code or configuration changed, dataset/output location, package
-versions, validation result and any remaining limitation. For benchmarks, give
-samples/sec or bytes/sec with sample size, workers and cache state. Distinguish
-local smoke-test success from verified cloud or distributed behavior.
+`optimize(num_nodes=...)` submits Lightning jobs; it is not torchrun. Resolve the
+authorized teamspace/cloud/machines, use durable shared outputs, and verify every
+worker plus the merged index. Local serialization tests need no cluster.
 
 ## Gotchas
 
-- Keep the multiprocessing guard; define worker functions at module scope.
-- Do not confuse a local cache with the durable dataset. Cleaning a cache must
-  not delete source chunks or an output directory shared by another run.
-- Preserve sample ordering deliberately: a fixed seed does not repair a
-  class-sorted source that was chunked without the intended mixing.
-- Parent-process initialization of a non-fork-safe storage client can break
-  only multi-worker runs. Inspect worker stderr and the installed version's
-  downloader path before treating the eventual missing-chunk error as root cause.
-- Performance figures in upstream references are measurements of particular
-  workloads, not guaranteed speedups. Reproduce with representative data.
+- Define worker functions at module scope and use the multiprocessing `__main__` guard.
+- Cache cleanup must not delete durable source chunks or another run's output.
+- For class-sorted sources needing full mixing, shuffle inputs with a fixed seed
+  before optimizing. Chunk/intra-chunk shuffle does not ensure file-level mixing.
+- A late missing-chunk error can follow a crashed prefetch worker. Inspect worker
+  stderr; parent initialization of a non-fork-safe storage client can break only multi-worker runs.
+- Manual reads through Studio FUSE mounts do not measure LitData's direct-storage path.
+- Upstream throughput figures describe specific workloads. Measure representative data.
+
+## Verify and report
+
+Report changed code/configuration, dataset/output location, versions and actual
+validation. A preprocessing test must verify decoded batches; remote reads must
+use the intended workers; resume must verify sample continuity. Distinguish local
+validation from cloud or distributed execution.
+
+For performance claims, compare the same workload/cache conditions across repeated
+runs. Report throughput, sample size, workers and cache state. For a long task or
+handoff, retain source/output/cache paths, versions, checkpoint/job IDs and the
+last verified result; inspect those artifacts before resuming or overwriting output.
 
 ## Reference provenance and maintenance
 
