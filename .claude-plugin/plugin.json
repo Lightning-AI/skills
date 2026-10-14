@@ -2,7 +2,7 @@
   "name": "lightning",
   "displayName": "Lightning AI",
   "version": "1.1.3",
-  "description": "Agent skills for the Lightning AI platform: GPU Studios, batch jobs, deployments, sandboxes, the LLM gateway, shareable artifact links, and up-front cost estimates. Includes pipelines and LitData dataset workflows.",
+  "description": "Agent skills for the Lightning AI platform: GPU Studios, batch jobs, deployments, sandboxes, the LLM gateway, shareable artifact links, up-front cost estimates, and billing balances and spend reports. Includes pipelines and LitData dataset workflows.",
   "author": {
     "name": "Lightning AI",
     "url": "https://lightning.ai"
@@ -18,7 +18,8 @@
     "llm",
     "cost-estimation",
     "pipeline",
-    "litdata"
+    "litdata",
+    "billing"
   ],
   "skills": [
     "./lightning-studios",
@@ -29,7 +30,8 @@
     "./lightning-artifacts",
     "./lightning-cost-estimation",
     "./lightning-pipelines",
-    "./lightning-litdata"
+    "./lightning-litdata",
+    "./lightning-billing"
   ],
   "types": "./types/index.d.ts"
 }

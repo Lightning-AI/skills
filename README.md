@@ -1,6 +1,6 @@
 # Lightning AI Agent Skills
 
-Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, pipelines, LitData dataset workflows, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, and up-front cost estimates for any of it.
+Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any agent that supports the [SKILL.md format](https://code.claude.com/docs/en/skills)) how to use the [Lightning AI](https://lightning.ai) platform: GPU Studios, batch jobs, pipelines, LitData dataset workflows, model deployments, code-execution sandboxes, the LLM gateway, durable shareable artifact links, up-front cost estimates for any of it, and billing: balances and spend reports.
 
 ## Skills
 
@@ -15,6 +15,7 @@ Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any ag
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
 | [`lightning-pipelines`](lightning-pipelines/SKILL.md) | Automate dependent jobs and recurring training; update schedules, diagnose exact runs and clean up resources |
 | [`lightning-litdata`](lightning-litdata/SKILL.md) | Turn source data into verified training batches; stream, resume and tune datasets using the curated LitData guides |
+| [`lightning-billing`](lightning-billing/SKILL.md) | Check credit balances and see what was actually spent: by resource type, user, teamspace, day or single job; LLM token spend, monthly credits, plan limits and price quotes; transfer credits and get Stripe top-up links |
 
 **Tutorial:** [teach a 4B model to call tools on a cloud GPU](examples/finetune-eval/README.md). It starts from a Mac or a Claude cloud session and one chat message.
 
@@ -65,7 +66,7 @@ Avoid `--all` unless you mean it: it selects every skill *and* every agent on th
 Or copy the skill folders straight into your agent's skills directory:
 
 ```bash
-SKILLS="lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway lightning-artifacts lightning-cost-estimation lightning-pipelines lightning-litdata"
+SKILLS="lightning-studios lightning-jobs lightning-deployments lightning-sandboxes lightning-llm-gateway lightning-artifacts lightning-cost-estimation lightning-pipelines lightning-litdata lightning-billing"
 
 # Claude Code (project-level)
 mkdir -p .claude/skills && cp -r $SKILLS .claude/skills/
