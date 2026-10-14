@@ -1,15 +1,28 @@
 ---
 name: lightning-pipelines
-description: Build, update, schedule, inspect and troubleshoot Lightning AI pipelines with dependent CPU/GPU jobs, Studio snapshots and shared data. Use when the user wants a multi-step workflow, recurring training, schedule replacement, a pipeline rerun, or logs from a specific pipeline run.
+description: Build, update, schedule, inspect and troubleshoot Lightning AI pipelines with dependent CPU/GPU jobs, Studio snapshots and shared data. Use when the user wants a multi-step workflow, recurring training, schedule replacement, or logs from a specific pipeline run.
 license: Apache-2.0
 compatibility: Requires Python with uv or pip, lightning-sdk, network access to lightning.ai and a Lightning AI account. Raw API examples use jq.
 ---
 
 # Lightning AI Pipelines
 
-A pipeline stores a DAG and starts an execution when submitted. A scheduled execution
-copies the version referenced by its schedule. Creating/updating the pipeline can
-start billable work immediately, even when schedules are supplied.
+Use pipelines to run preparation, training and other dependent steps as one workflow.
+`Pipeline.run()` submits a new version **and starts it immediately**, including when
+schedules are supplied. A schedule starts a copy of the version it targets.
+
+Choose the operation before making changes:
+
+| User wants | Action | Evidence of success |
+|---|---|---|
+| Run new or changed steps | Submit with `Pipeline.run()` | Selected run completes; expected step output exists |
+| Change only when a pipeline runs | Update the existing schedule with PUT | Cron, timezone and target read back correctly; no new run submitted |
+| Apply new steps to future scheduled runs | Submit the version and replace its schedules | One intended schedule set remains, targeting the new version |
+| Explain a failed execution | Inspect the exact run and failing step | Job ID, failure evidence and relevant logs match that execution |
+| Stop current work | Stop the selected run | Run reaches a terminal state; future schedules are handled separately |
+
+Reuse the user's teamspace and resource choices. Resolve missing IDs from the API;
+ask only when several resources fit and the request does not identify one.
 
 ## Setup & auth
 
@@ -43,10 +56,8 @@ then declare `lightning-sdk` as a dependency with the project's own tool (`uv ad
 
 ### First run: no CLI or account yet
 
-The user may never have heard of Lightning and may not have asked for it by name. Say in one line
-that the job would run on Lightning AI and why (e.g. "no GPU here"), then set up for them instead
-of stopping at the first error. Run the setup block above (it installs the CLI if it's missing),
-then check for a signed-in user:
+If the task calls for Lightning and the CLI is missing, run the setup block above,
+then check authentication:
 
 ```bash
 lightning auth whoami || echo "not signed in"
@@ -65,8 +76,8 @@ If nobody is signed in, choose the path that fits the machine:
   **Custom**, allowing `lightning.ai` and `*.lightning.ai` with the default list kept. Both
   changes take effect in a **new** session only.
 
-Then continue with *Resolving org and teamspace*. A new account has one teamspace, so there's
-nothing to ask.
+Then resolve the teamspace from the request and memberships. If exactly one fits,
+continue with it.
 
 ## Resolving org and teamspace (do this first)
 
@@ -85,11 +96,12 @@ For a personal owner, use `/v1/users/search -X GET -f query=<ownerId>` and match
 `.users[].id` exactly before taking `.username`. A fuzzy match is not identity proof.
 For an explicit slug, Python `Teamspace("owner/teamspace").id` resolves the project.
 
-Set shell variables from that verified selection, not from the first list result:
+Replace the example values below with the verified selection. Use that same `$PID`
+and `$TS` throughout the task:
 
 ```bash
 TS=owner/teamspace
-PID=<verified-project-id>
+PID='verified-project-id'
 lightning api "/v1/projects/$PID/clusters" -q '.clusters[] | [.id,.name,.status.phase] | @tsv'
 ```
 
@@ -120,7 +132,8 @@ A lifecycle line saying "workload failed" is not the underlying Python traceback
 
 Use the SDK in the same environment as the CLI. A unique name creates a disposable
 pipeline; reuse the name only when updating that existing workflow is intended.
-This one-step smoke test needs no Studio or shared filesystem:
+This one-step example needs no Studio or shared filesystem. Replace the teamspace
+and pipeline name before submitting; choose a unique name for a disposable test:
 
 ```python
 from lightning_sdk import Machine, Teamspace
@@ -135,7 +148,9 @@ pipeline.run(steps=[
 ```
 
 Submission success only proves the API accepted the DAG. Read the run and step
-states below until terminal; inspect logs and expected output before declaring success.
+states until terminal with a deadline appropriate to the workload. Do not resubmit
+while polling. Inspect logs and expected output before declaring success; on timeout,
+report the current state and whether the job is still running.
 
 ### Studio preparation then training
 
@@ -184,18 +199,25 @@ that every `Job.run` or `Deployment.start` option has a pipeline equivalent.
 
 ## Example workflows
 
-### "Update this pipeline's weekly schedule"
+### "Move the weekly run to Monday at 05:40 UTC"
 
-1. Resolve the existing run, its root and all ancestor IDs. Snapshot the current
-   schedule IDs and expressions before submitting anything.
-2. Submit the intended new steps/schedules with `Pipeline.run`. This also starts
-   an immediate run. Do not use it merely to edit a cron expression when no run
-   was requested; edit that schedule through the API instead.
-3. Read schedules back: the desired schedule's `resourceId` must be the new run ID,
-   and `parentResourceId` the original root. Old schedule IDs must be absent.
-4. Observe a scheduled child: its `scheduleId` must match and its
-   `parentPipelineId` must identify the intended version. Check its step command
-   and output marker, not just the number of schedules in the UI.
+Use the [schedule-only update](#edit-a-schedule-without-starting-a-run). Confirm the
+selected schedule, timezone and target, then change only the requested fields.
+Read them back and report the next execution time. Do not call `Pipeline.run()`
+for a cron-only change: that would start an unrequested execution.
+
+### "Use the updated training steps for future runs"
+
+1. Resolve the current version, root and ancestors. Record existing schedule IDs,
+   targets, cron expressions and timezones before submitting.
+2. Submit the intended steps and complete desired schedule set with `Pipeline.run()`.
+   This starts one immediate execution as well as configuring future ones.
+3. List schedules under the root and ancestors. Verify the desired schedules target
+   the new version, remain grouped under the root, and replaced IDs are absent.
+4. Report configuration verification separately from execution verification. For an
+   end-to-end test, observe a scheduled child whose `scheduleId` matches and whose
+   `parentPipelineId` is the intended version; check its step output. Do not move a
+   user's weekly schedule forward merely to finish a test sooner.
 
 **Version boundary:** SDK PR [#201](https://github.com/Lightning-AI/sdk/pull/201)
 fixes repeated updates leaving schedules grouped under intermediate versions.
@@ -208,15 +230,15 @@ before retrying. Avoid concurrent updates to one pipeline.
 
 ### "Why did Monday's training fail?"
 
-List runs under the original root, select the requested timestamp/ID, read its
-statuses, then fetch the failing step's logs. Confirm project ID, pipeline root,
+List runs under the original root and scheduled version, select the requested
+timestamp/ID, and read its statuses. Fetch the failing step's logs. Confirm project ID, pipeline root,
 run ID and job ID before exporting anything to a customer. Do not substitute
 logs from the newest run or another similarly named pipeline.
 
 If the job never started, inspect its `message` and `serverError`; a machine
 startup failure is not a training exception. `Stopping` is not terminal, and the
 SDK can refuse logs in that state. Poll with a deadline, then report the exact
-state/IDs and evidence gap rather than manufacturing a workload error.
+state, resource IDs and what remains unknown.
 
 ## Raw API fallback
 
@@ -227,12 +249,12 @@ first page contains every run.
 ```bash
 # Discover roots, then select one by name/id and verify its project.
 lightning api "/v1/projects/$PID/pipelines" -X GET -F standalone=true -F limit=100
-ROOT=<original-pipeline-id>
+ROOT='original-pipeline-id'
 lightning api "/v1/projects/$PID/pipelines" -X GET -f originalPipelineId="$ROOT" -F limit=100
 # Scheduled children can be absent from the root-filtered response; query their target too.
-VERSION=<scheduled-version-id>
+VERSION='scheduled-version-id'
 lightning api "/v1/projects/$PID/pipelines" -X GET -f parentPipelineId="$VERSION" -F limit=100
-RUN=<selected-run-id>
+RUN='selected-run-id'
 lightning api "/v1/projects/$PID/pipelines/$RUN" -q '{id,name,projectId,parentPipelineId,scheduleId,state,message,statuses}'
 lightning api "/v1/projects/$PID/pipelines/$RUN" -q '.steps'
 ```
@@ -245,31 +267,49 @@ parent as the root after several updates.
 # Root-grouped schedules (UI grouping) and schedules targeting this version.
 lightning api "/v1/projects/$PID/schedules" -X GET -f parentResourceId="$ROOT"
 lightning api "/v1/projects/$PID/schedules" -X GET -f resourceId="$RUN"
-SID=<verified-schedule-id>
+SID='verified-schedule-id'
 lightning api "/v1/projects/$PID/schedules/$SID"
-
-# Stop an exact execution. This does not disable future schedules.
-lightning api "/v1/projects/$PID/pipelines/$RUN" -X PUT -f state=PIPELINE_STATE_STOP
-
-# Disable future occurrences by deleting only the selected schedule.
-lightning api "/v1/projects/$PID/schedules/$SID" -X DELETE
 ```
 
-To edit a schedule without launching a job, GET it, retain its intended target
-and grouping, and PUT the revised schedule body to the same schedule URL. Read
-it back. For example, change only the cron expression, preserving the other fields:
+### Edit a schedule without starting a run
+
+GET the selected schedule, retain its intended target and grouping, and PUT the revised schedule body to the same schedule URL. Read
+back its cron, timezone, target and next execution time. This example changes only
+the cron expression; it preserves the existing timezone. Use it for 05:40 UTC only
+when that schedule already uses UTC:
 
 ```bash
-SCHEDULE_BODY=$(mktemp)
-lightning api "/v1/projects/$PID/schedules/$SID" \
-  | jq '.cronExpression = "40 5 * * 1"' > "$SCHEDULE_BODY"
-lightning api "/v1/projects/$PID/schedules/$SID" -X PUT --input "$SCHEDULE_BODY"
-rm "$SCHEDULE_BODY"
-lightning api "/v1/projects/$PID/schedules/$SID"
+(
+  set -e
+  SCHEDULE_BODY=$(mktemp)
+  trap 'rm -f "$SCHEDULE_BODY"' EXIT
+  lightning api "/v1/projects/$PID/schedules/$SID" > "$SCHEDULE_BODY"
+  jq -e '.id and .resourceId' "$SCHEDULE_BODY" >/dev/null
+  UPDATED=$(jq '.cronExpression = "40 5 * * 1"' "$SCHEDULE_BODY")
+  printf '%s\n' "$UPDATED" > "$SCHEDULE_BODY"
+  lightning api "/v1/projects/$PID/schedules/$SID" -X PUT --input "$SCHEDULE_BODY"
+  lightning api "/v1/projects/$PID/schedules/$SID"
+)
 ```
 
 Do not invent a `schedule run` endpoint for pipelines: the similarly
 named endpoint under `/cloudspaces/.../schedules/.../runs` belongs to Studios.
+
+### Stop a run or remove a schedule
+
+These are separate operations. Run only the one the user requested; stopping an
+execution leaves future schedules active, and deleting a schedule does not stop
+an execution already started.
+
+```bash
+# Stop the selected execution, then poll its state until terminal.
+lightning api "/v1/projects/$PID/pipelines/$RUN" -X PUT -f state=PIPELINE_STATE_STOP
+```
+
+```bash
+# Remove the selected schedule, then verify its absence from the schedule list.
+lightning api "/v1/projects/$PID/schedules/$SID" -X DELETE
+```
 
 ### Cleanup
 
@@ -282,7 +322,7 @@ both listings are empty. Do not delete a user's workflow to stop
 one execution. Deleting a pipeline can delete its run history.
 
 ```bash
-SCHEDULED_RUN=<verified-test-child-id>
+SCHEDULED_RUN='verified-test-child-id'
 lightning api "/v1/projects/$PID/pipelines/$SCHEDULED_RUN" -X DELETE
 lightning api "/v1/projects/$PID/pipelines/$ROOT" -X DELETE
 lightning api "/v1/projects/$PID/pipelines" -X GET -f originalPipelineId="$ROOT"
@@ -301,3 +341,12 @@ lightning api "/v1/projects/$PID/pipelines" -X GET -f parentPipelineId="$VERSION
   scheduled run and output when validating a schedule change.
 - Empty historical logs do not prove that a workload emitted nothing. Keep the
   lifecycle response and job ID, and distinguish missing logs from the job failure.
+
+## Report the result
+
+Return the pipeline link or exact run ID, teamspace, operation performed and
+verification evidence. For schedules, include cron, timezone, target version and
+next execution time. State whether an execution was observed or only configuration
+was verified. For tests, say which resources were removed and identify any still
+running. For failures, include the relevant error and log location without
+substituting lifecycle messages for workload output.

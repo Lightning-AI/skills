@@ -7,13 +7,15 @@ compatibility: Requires Python with uv or pip and litdata with PyTorch. Cloud da
 
 # Lightning AI LitData
 
-LitData preprocesses datasets and streams them into PyTorch training. It can run
-locally without a Lightning account. Cloud orchestration and access to private
-objects need their own credentials; installing LitData does not grant either.
+Use LitData to turn source data into validated training batches, stream existing
+datasets, or diagnose the I/O that limits training. Local processing needs no
+Lightning account. Private cloud storage needs credentials for that storage;
+Lightning multi-node processing also needs an authorized teamspace.
 
-Start with [the usage cookbook](references/using-litdata.md), then load only the
-reference matching the task. The full curated upstream reference set is bundled
-so the agent can handle advanced usage and diagnosis without a separate checkout.
+Start with the task table below. Read the relevant section of
+[the usage cookbook](references/using-litdata.md) when choosing an API or writing
+an example; load specialized references only when needed. The 15 bundled guides
+cover advanced workflows without requiring a LitData checkout.
 
 ## Setup & version checks
 
@@ -29,14 +31,15 @@ uv pip install --python /tmp/litdata-check/bin/python litdata torch
 Do not replace a project's PyTorch/CUDA pins just to run an example. Install
 optional storage, image, audio or video dependencies only when that task requires
 them. Verify extras against the installed package metadata; older documentation
-uses both `extra` and `extras`, which are not interchangeable promises.
+uses both `extra` and `extras`; use only the extra declared by that version.
 
 These references are a snapshot of upstream development, not proof that every
 API exists in the latest PyPI wheel. Before using newer features, inspect the
 installed API (for example `hasattr(litdata, "StreamingRawDataset")` and
 `inspect.signature(litdata.optimize)`). Prefer the stable installed equivalent;
-if the task requires an unreleased feature, state that and use a deliberate
-commit pin. Do not silently upgrade a training environment to upstream main.
+if the task requires an unreleased feature, explain the version requirement
+before changing the dependency and pin the selected commit. Do not silently
+upgrade a training environment to upstream main.
 
 ## Choose the data path
 
@@ -50,16 +53,21 @@ commit pin. Do not silently upgrade a training environment to upstream main.
 | Mix datasets, exact resume, distributed shuffling | Streaming loader and dataset composition | [Streaming](references/streaming.md) |
 | Stable sample keys, incremental updates | Key index and keyed access | [Keyed lookup](references/keyed-lookup.md) |
 
-Ask only for missing information that changes the solution: source format and
-location, target sample shape, output destination, and intended training setup.
-Inspect existing code/config first. Preserve labels, ordering requirements and
-train/validation splits. Never overwrite a source dataset as a smoke test.
+Inspect the existing data loader and configuration first. Establish the source
+format/location, expected batch structure, output destination and training setup.
+Ask only for missing choices that affect correctness or placement. Preserve labels,
+ordering requirements and train/validation splits; use a separate output directory
+for a trial conversion.
 
-## Python SDK: optimize, stream, verify
+Finish the requested workflow, not just the example: implement the data path,
+validate representative samples and batches, then report the artifact location
+and measured result. Scale preprocessing only after that small check passes.
 
-Save as a real Python file; multiprocessing entry points need the `__main__`
-guard. This local smoke test writes only to its own temporary directory, checks
-sample contents and batching, and cleans up automatically:
+## Python API: optimize, stream, verify
+
+Save the following as `litdata_smoke.py` and run it with the environment’s Python.
+The `__main__` guard is required for multiprocessing. The test writes to its own
+temporary directory, checks sample contents and batching, and cleans up afterward:
 
 ```python
 from pathlib import Path
@@ -98,7 +106,7 @@ iteration; success of the preprocessing process alone does not validate training
 
 ### "Prepare my images for training"
 
-Read the media section of [the cookbook](references/using-litdata.md). Prefer
+Read [media types and serializers](references/using-litdata.md#3-images-media-types--serializers). Prefer
 compressed image serialization (`Image`/`Jpeg` when available, or the installed
 version's supported JPEG serializer) over returning decoded PIL pixels, which
 can inflate storage. Keep captions as text and labels alongside images. A
@@ -126,8 +134,10 @@ scope; do not print tokens or create new permissions as a workaround.
 
 ### "Resume training / mix several datasets"
 
-Read [streaming](references/streaming.md) and the cookbook's shuffle/resume and
-composition sections. Save and restore the `StreamingDataLoader.state_dict()`
+Read [shuffle and resume](references/using-litdata.md#5-shuffle-seed-drop_last-resume)
+and [dataset composition](references/using-litdata.md#11-combine--parallel--cycle);
+use [streaming internals](references/streaming.md) when diagnosing behavior.
+Save and restore the `StreamingDataLoader.state_dict()`
 alongside model/optimizer state; rebuilding the loader with a seed alone is not
 mid-epoch resume. Validate sample IDs around a checkpoint and check worker/world
 size support in the installed version. Choose weighted `CombinedStreamingDataset`
@@ -136,8 +146,9 @@ not merely because both accept several datasets.
 
 ### "My data loader hangs or is slow"
 
-Follow [debugging](references/debugging.md), then [cache lifecycle](references/cache-and-chunk-lifecycle.md)
-and [benchmarking](references/benchmarking.md). Capture version, source/cache
+Start with [debugging](references/debugging.md). Use [cache lifecycle](references/cache-and-chunk-lifecycle.md)
+for eviction or prefetch problems and [benchmarking](references/benchmarking.md)
+for throughput measurements. Capture version, source/cache
 paths, worker count, cache limit, first traceback and the smallest failing batch.
 Compare `num_workers=0` with the intended setting before increasing timeouts.
 A late `FileNotFoundError` may be a failed prefetch worker, not a missing object.
@@ -159,6 +170,21 @@ to launching the same script with torchrun. Choose the authorized teamspace,
 cloud and machines, use durable shared outputs, and inspect every worker's
 outcome plus the merged index. Do not launch a cluster merely to test a local
 serialization change.
+
+## Verify and report
+
+| Task | Verify before calling it complete |
+|---|---|
+| Preprocess a dataset | Output index and sample count; decoded values, labels and batch structure |
+| Read remote data | Representative batches with the intended worker count; source and cache paths are correct |
+| Resume training | Sample IDs around the checkpoint show the intended continuation |
+| Improve performance | Same workload and cache conditions before/after; report repeated measurements |
+| Run multi-node processing | Every worker completes and the final merged index can be read |
+
+Return the code or configuration changed, dataset/output location, package
+versions, validation result and any remaining limitation. For benchmarks, give
+samples/sec or bytes/sec with sample size, workers and cache state. Distinguish
+local smoke-test success from verified cloud or distributed behavior.
 
 ## Gotchas
 

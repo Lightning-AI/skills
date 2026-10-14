@@ -13,8 +13,8 @@ Agent skills that teach AI coding agents (Claude Code, Codex, Cursor, and any ag
 | [`lightning-llm-gateway`](lightning-llm-gateway/SKILL.md) | Call hosted LLMs (OpenAI, Anthropic, open models) through Lightning's models API |
 | [`lightning-artifacts`](lightning-artifacts/SKILL.md) | Publish a file and get a durable, public `lightning.ai/artifacts/<id>` link that never expires and renders inline; list, revoke, and delete shares — entirely via the CLI with regular auth |
 | [`lightning-cost-estimation`](lightning-cost-estimation/SKILL.md) | Quote what a training run, fine-tune or deployment costs: live per-hour GPU/CPU prices for every cloud, spot rates, multi-node fan-out, and Drive storage |
-| [`lightning-pipelines`](lightning-pipelines/SKILL.md) | Build DAGs, update schedules, inspect exact runs, retrieve step logs and clean up workflows |
-| [`lightning-litdata`](lightning-litdata/SKILL.md) | Preprocess and stream training datasets, handle media, resume loaders and diagnose cloud I/O with the curated LitData reference set |
+| [`lightning-pipelines`](lightning-pipelines/SKILL.md) | Automate dependent jobs and recurring training; update schedules, diagnose exact runs and clean up resources |
+| [`lightning-litdata`](lightning-litdata/SKILL.md) | Turn source data into verified training batches; stream, resume and tune datasets using the curated LitData guides |
 
 **Tutorial:** [teach a 4B model to call tools on a cloud GPU](examples/finetune-eval/README.md). It starts from a Mac or a Claude cloud session and one chat message.
 
