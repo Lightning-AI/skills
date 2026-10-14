@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/Lightning-AI/skills/compare/v1.1.3...v1.2.0) (2026-10-14)
+
+
+### Features
+
+* **billing:** add lightning-billing skill ([#62](https://github.com/Lightning-AI/skills/issues/62)) ([44a33f0](https://github.com/Lightning-AI/skills/commit/44a33f09e1ff3c7c17e19c320d019ca470ac8e48))
+* **skills:** teach agents pipeline and LitData workflows ([#60](https://github.com/Lightning-AI/skills/issues/60)) ([a7cea9c](https://github.com/Lightning-AI/skills/commit/a7cea9ce2a3f1b0dc77d858411a4f0acec34a6b4))
+
 ## [1.1.3](https://github.com/Lightning-AI/skills/compare/v1.1.2...v1.1.3) (2026-10-13)
 
 
