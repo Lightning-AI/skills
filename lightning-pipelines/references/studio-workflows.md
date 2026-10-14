@@ -15,8 +15,8 @@ from lightning_sdk.pipeline import JobStep, Pipeline, Schedule
 
 ts = Teamspace("owner/teamspace")
 studio = Studio("train-env", teamspace=ts)
-pipeline = Pipeline(name="training-on-studio-env", teamspace=ts,
-                    studio=studio, shared_filesystem=True)
+pipeline = Pipeline(name="training-on-studio-env", teamspace=ts, studio=studio,
+                    cloud=studio.cloud_account, shared_filesystem=True)
 pipeline.run(
     steps=[
         JobStep(name="prepare", command="sh /teamspace/studios/this_studio/prepare_data.sh",

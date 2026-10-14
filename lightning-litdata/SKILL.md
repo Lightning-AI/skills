@@ -16,9 +16,7 @@ credentials; Lightning multi-node processing also needs an authorized teamspace.
 Use the project's environment and retain its PyTorch/CUDA pins. For an isolated check:
 
 ```bash
-uv venv /tmp/litdata-check
-uv pip install --python /tmp/litdata-check/bin/python litdata torch
-/tmp/litdata-check/bin/python -c "import litdata, torch; print(litdata.__version__, torch.__version__)"
+uv run --no-project --with litdata --with torch python -c "import litdata, torch; print(litdata.__version__, torch.__version__)"
 ```
 
 Start with the runnable examples for optimize, streaming and resume. The upstream

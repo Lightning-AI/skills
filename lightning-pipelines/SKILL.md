@@ -145,6 +145,9 @@ state and logs. If local post-submit code fails, recover the ID through
 Use a unique name for a test; reuse a pipeline name only to update it. Reuse an
 existing managed folder with a unique subdirectory for each production run.
 Dependencies control order; each job must use the same explicit storage path.
+Default storage propagates asynchronously: use bounded file-visibility checks
+before reads/downloads. Optimized distributed storage has different visibility
+semantics; verify the selected storage type.
 Read [storage handoff and export](references/storage-workflows.md) to download
 outputs or clean up. For Studio snapshots, DAGs or multi-machine steps, read
 [Studio and multi-step workflows](references/studio-workflows.md).
@@ -176,7 +179,8 @@ target and next execution. Do not submit a pipeline version for a timing-only ed
    weekly schedule intact; use a disposable pipeline for an earlier test.
 
 SDK [PR #201](https://github.com/Lightning-AI/sdk/pull/201) fixes duplicate schedules
-across repeated updates. Check whether the installed release includes it before
+across repeated updates. Release `2026.10.13` predates that fix; no released
+version containing it has been verified here. Check the installed release before
 relying on replacement. Older versions need explicit removal of verified obsolete
 schedule IDs. In the fixed version, omitted `schedules` or `[]` removes schedules;
 pass the desired schedules again to retain them. Replacement uses several API
@@ -207,7 +211,8 @@ Load only the recipe the task needs:
   submitted. Do not infer concurrency from the request alone.
 - `parentResourceId` groups schedules under a root; `resourceId` chooses the
   version to execute. Correct UI grouping does not prove the correct target.
-- `Pipeline.stop()` at SDK commit `b2dc858` raises `TypeError` because its update
+- `Pipeline.stop()` is verified broken in `lightning-sdk==2026.10.13`: it raises
+  `TypeError` because its update
   call lacks IDs. Use the [stop recipe](references/operations.md#stop-a-run-or-remove-a-schedule)
   with `PIPELINE_STATE_STOP` until the installed SDK fixes it.
 - Lifecycle messages and missing historical logs are not workload tracebacks.
