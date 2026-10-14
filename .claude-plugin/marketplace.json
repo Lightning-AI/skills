@@ -13,7 +13,7 @@
         "url": "https://github.com/Lightning-AI/skills.git",
         "ref": "stable"
       },
-      "description": "Drive Lightning AI from your agent: cloud GPU Studios, batch and multi-machine jobs, autoscaled deployments, ephemeral sandboxes, the LLM gateway, durable artifact links, and live cost estimates."
+      "description": "Drive Lightning AI from your agent: cloud GPU Studios, batch and multi-machine jobs, autoscaled deployments, ephemeral sandboxes, the LLM gateway, durable artifact links, and live cost estimates. Includes pipelines and LitData dataset workflows."
     }
   ]
 }
